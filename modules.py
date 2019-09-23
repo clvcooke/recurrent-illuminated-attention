@@ -359,8 +359,9 @@ class decision_network(nn.Module):
         self.fc = nn.Linear(input_size, output_size)
 
     def forward(self, h_t):
-        probs = F.log_softmax(self.fc(h_t), dim=1)
+        probs = F.softmax(self.fc(h_t), dim=1)
         sample = Categorical(probs=probs).sample()
+        probs = torch.log(probs)
         return sample, probs
 
 

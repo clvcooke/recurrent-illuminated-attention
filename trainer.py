@@ -172,7 +172,10 @@ class Trainer(object):
             train_loss, train_acc = self.train_one_epoch(epoch)
 
             # evaluate on validation set
-            valid_loss, valid_acc = self.validate(epoch)
+            # valid_loss, valid_acc = self.validate(epoch)
+            print("BAD HACK")
+            valid_acc = train_acc
+            valid_loss = train_loss
 
             # # reduce lr if validation loss plateaus
             # self.scheduler.step(valid_loss)
@@ -213,6 +216,7 @@ class Trainer(object):
         batch_time = AverageMeter()
         losses = AverageMeter()
         accs = AverageMeter()
+        glimpses = AverageMeter()
 
         tic = time.time()
         with tqdm(total=self.num_train) as pbar:
@@ -255,13 +259,13 @@ class Trainer(object):
 
                 if not early_exit:
                     # last iteration
-                    h_t, l_t, b_t, log_probas, p = self.model(
+                    h_t, l_t, b_t, p, log_probas, _, _= self.model(
                         x, l_t, h_t, last=True
                     )
                     log_pi.append(p)
                     baselines.append(b_t)
                     locs.append(l_t[0:9])
-
+                glimpses.update(total_glimpses)
 
 
                 # calculate reward
@@ -274,7 +278,7 @@ class Trainer(object):
                     loss_decision = F.nll_loss(log_d, R[0][0:1].long())
                 else:
                     # if we ran out of time we should have made a decision
-                    loss_decision = F.nll_loss(log_d, torch.tensor(1))
+                    loss_decision = F.nll_loss(log_d, torch.tensor([1]))
 
                 # compute losses for differentiable modules
                 loss_action = F.nll_loss(log_probas, y)
@@ -329,8 +333,8 @@ class Trainer(object):
                     acc_data = acc.data.item()
                 pbar.set_description(
                     (
-                        "{:.1f}s - loss: {:.3f} - acc: {:.3f}".format(
-                            (toc-tic), losses.avg, accs.avg
+                        "{:.1f}s - loss: {:.3f} - acc: {:.3f}, glm {:.3f}".format(
+                            (toc-tic), losses.avg, accs.avg, glimpses.avg
                         )
                     )
                 )
