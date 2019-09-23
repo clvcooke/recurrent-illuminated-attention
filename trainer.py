@@ -378,10 +378,10 @@ class Trainer(object):
             x, y = Variable(x), Variable(y)
 
             # duplicate 10 times
-            x = x.repeat(self.M, 1, 1, 1)
+            # x = x.repeat(self.M, 1, 1, 1)
 
             # initialize location vector and hidden state
-            self.batch_size = x.shape[0]
+            # self.batch_size = x.shape[0]
             h_t, l_t = self.reset()
 
             # extract the glimpses
