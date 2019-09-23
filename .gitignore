@@ -107,3 +107,11 @@ ENV/
 
 # mypy
 .mypy_cache/
+
+.idea/inspectionProfiles/
+
+.idea/
+
+data/MNIST/processed/
+
+data/MNIST/raw/

@@ -7,6 +7,18 @@ from torchvision import transforms
 from torch.utils.data.sampler import SubsetRandomSampler
 
 
+class CustomDataset(torch.utils.data.Dataset):
+    def __init__(self, data_x, data_y):
+        self.data_x = data_x
+        self.data_y = data_y
+
+    def __getitem__(self, index):
+        image = self.data_x[index]
+        label = self.data_y[index]
+
+        return (image, label)
+
+
 def get_train_valid_loader(data_dir,
                            batch_size,
                            random_seed,
@@ -44,18 +56,15 @@ def get_train_valid_loader(data_dir,
     error_msg = "[!] valid_size should be in the range [0, 1]."
     assert ((valid_size >= 0) and (valid_size <= 1)), error_msg
 
-    # define transforms
-    normalize = transforms.Normalize((0.1307,), (0.3081,))
-    trans = transforms.Compose([
-        transforms.ToTensor(), normalize,
-    ])
+    datapath_train_images = r"C:\Users\clvco\Documents\Code\K-space_rl-data\train_data_norm_v2.npy"
+    datapath_train_labels = r"C:\Users\clvco\Documents\Code\K-space_rl-data\train_labels.npy"
 
-    # load dataset
-    dataset = datasets.MNIST(
-        data_dir, train=True, download=True, transform=trans
-    )
+    data_x= torch.from_numpy(np.load(datapath_train_images).swapaxes(0, 1).reshape((-1, 28, 28, 25))).float()
+    data_y = torch.from_numpy(np.argmax(np.load(datapath_train_labels), axis=-1))
 
-    num_train = len(dataset)
+
+
+    num_train = data_x.shape[0]
     indices = list(range(num_train))
     split = int(np.floor(valid_size * num_train))
 
@@ -67,6 +76,8 @@ def get_train_valid_loader(data_dir,
 
     train_sampler = SubsetRandomSampler(train_idx)
     valid_sampler = SubsetRandomSampler(valid_idx)
+
+    dataset = CustomDataset(data_x, data_y)
 
     train_loader = torch.utils.data.DataLoader(
         dataset, batch_size=batch_size, sampler=train_sampler,

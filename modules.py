@@ -37,6 +37,19 @@ class retina(object):
         self.k = k
         self.s = s
 
+    def illuminate(self, x, k):
+        """
+        Extract 1 k space sample
+
+        The `k` patches are finally resized to (g, g) and
+        concatenated into a tensor of shape (B, k, g, g, C).
+        """
+        # get the k_space samples
+        phi = self.extract_k_stack(x, k)
+
+        # post processing as in normalize?
+        return phi.view((phi.shape[0], -1))
+
     def foveate(self, x, l):
         """
         Extract `k` square patches of size `g`, centered
@@ -66,6 +79,39 @@ class retina(object):
         phi = phi.view(phi.shape[0], -1)
 
         return phi
+
+    @staticmethod
+    def sample_k_space(k_stack, led_configuration):
+        # TODO: there is probably a better/more efficient way to do this...
+        k_space_sample = torch.sum(k_stack * led_configuration.flatten(), axis=-1)
+        return k_space_sample
+
+    def extract_k_stack(self, x, k):
+        """
+                Extract a single sample for each image in the
+                minibatch `x`.
+
+                Args
+                ----
+                - x: a 4D Tensor of shape (B, H, W, K). The minibatch
+                  of images.
+                - l: a 2D Tensor of shape (B, K).
+                - size: a scalar defining the size of the extracted patch.
+
+                Returns
+                -------
+                - patch: a 4D Tensor of shape (B, size, size, C)
+        """
+        B, K, H, W = x.shape
+
+        samples = []
+        for i in range(B):
+            im = x[i].unsqueeze(dim=0)
+            sample = self.sample_k_space(im, k[i])
+            samples.append(sample)
+        # concat into a single tensor
+        samples = torch.cat(samples)
+        return samples
 
     def extract_patch(self, x, l, size):
         """
@@ -103,8 +149,12 @@ class retina(object):
             from_y, to_y = patch_y[i], patch_y[i] + size
 
             # cast to ints
-            from_x, to_x = from_x.data[0], to_x.data[0]
-            from_y, to_y = from_y.data[0], to_y.data[0]
+            try:
+                from_x, to_x = from_x.data[0], to_x.data[0]
+                from_y, to_y = from_y.data[0], to_y.data[0]
+            except IndexError:
+                from_x, to_x = from_x.data.item(), to_x.data.item()
+                from_y, to_y = from_y.data.item(), to_y.data.item()
 
             # pad tensor in case exceeds
             if self.exceeds(from_x, to_x, from_y, to_y, T):
@@ -192,33 +242,32 @@ class glimpse_network(nn.Module):
         self.retina = retina(g, k, s)
 
         # glimpse layer
-        D_in = k*g*g*c
+        D_in = 28*28
         self.fc1 = nn.Linear(D_in, h_g)
 
         # location layer
-        D_in = 2
+        D_in = 25
         self.fc2 = nn.Linear(D_in, h_l)
 
         self.fc3 = nn.Linear(h_g, h_g+h_l)
         self.fc4 = nn.Linear(h_l, h_g+h_l)
 
-    def forward(self, x, l_t_prev):
-        # generate glimpse phi from image x
-        phi = self.retina.foveate(x, l_t_prev)
+    def forward(self, x, k_t_prev):
+        # generate k-sample phi from image x
+        phi = self.retina.illuminate(x, k_t_prev)
 
-        # flatten location vector
-        l_t_prev = l_t_prev.view(l_t_prev.size(0), -1)
+        # flatten illumination vector
+        k_t_prev = k_t_prev.view(k_t_prev.size(0), -1)
 
-        # feed phi and l to respective fc layers
-        phi_out = F.relu(self.fc1(phi))
-        l_out = F.relu(self.fc2(l_t_prev))
+        # feed phi and k into respective fc layers
+        phi_out = torch.relu(self.fc1(phi))
+        k_out = torch.relu(self.fc2(k_t_prev))
 
         what = self.fc3(phi_out)
-        where = self.fc4(l_out)
+        where = self.fc4(k_out)
 
         # feed to fc layer
-        g_t = F.relu(what + where)
-
+        g_t = torch.relu(what + where) # why?
         return g_t
 
 
@@ -301,6 +350,26 @@ class action_network(nn.Module):
         a_t = F.log_softmax(self.fc(h_t), dim=1)
         return a_t
 
+
+class illumination_network(nn.Module):
+
+    def __init__(self, input_size, output_size, std):
+        super(illumination_network, self).__init__()
+        self.std = std
+        self.fc = nn.Linear(input_size, output_size)
+
+    def forward(self, h_t):
+        # compute mean
+        mu = torch.tanh(self.fc(h_t.detach()))
+
+        # reparametrization trick
+        noise = torch.zeros_like(mu)
+        noise.data.normal_(std=self.std)
+        k_t = mu + noise
+        # bound between [-1, 1]
+        k_t = torch.tanh(k_t)
+
+        return mu, k_t
 
 class location_network(nn.Module):
     """

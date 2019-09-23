@@ -1,5 +1,3 @@
-import math
-
 import torch
 import torch.nn as nn
 
@@ -7,7 +5,7 @@ from torch.distributions import Normal
 
 from modules import baseline_network
 from modules import glimpse_network, core_network
-from modules import action_network, location_network
+from modules import action_network, illumination_network
 
 
 class RecurrentAttention(nn.Module):
@@ -58,11 +56,11 @@ class RecurrentAttention(nn.Module):
 
         self.sensor = glimpse_network(h_g, h_l, g, k, s, c)
         self.rnn = core_network(hidden_size, hidden_size)
-        self.locator = location_network(hidden_size, 2, std)
+        self.illuminator = illumination_network(hidden_size, 25, std)
         self.classifier = action_network(hidden_size, num_classes)
         self.baseliner = baseline_network(hidden_size, 1)
 
-    def forward(self, x, l_t_prev, h_t_prev, last=False):
+    def forward(self, x, k_t_prev, h_t_prev, last=False):
         """
         Run the recurrent attention model for 1 timestep
         on the minibatch of images `x`.
@@ -98,19 +96,21 @@ class RecurrentAttention(nn.Module):
           output log probability vector over the classes.
         - log_pi: a vector of length (B,).
         """
-        g_t = self.sensor(x, l_t_prev)
+        # sample k-space
+        g_t = self.sensor(x, k_t_prev)
         h_t = self.rnn(g_t, h_t_prev)
-        mu, l_t = self.locator(h_t)
-        b_t = self.baseliner(h_t).squeeze()
 
+        mu, k_t = self.illuminator(h_t)
+
+        b_t = self.baseliner(h_t).squeeze()
         # we assume both dimensions are independent
         # 1. pdf of the joint is the product of the pdfs
         # 2. log of the product is the sum of the logs
-        log_pi = Normal(mu, self.std).log_prob(l_t)
+        log_pi = Normal(mu, self.std).log_prob(k_t)
         log_pi = torch.sum(log_pi, dim=1)
 
         if last:
             log_probas = self.classifier(h_t)
-            return h_t, l_t, b_t, log_probas, log_pi
+            return h_t, k_t, b_t, log_probas, log_pi
 
-        return h_t, l_t, b_t, log_pi
+        return h_t, k_t, b_t, log_pi

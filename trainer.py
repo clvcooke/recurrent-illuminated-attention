@@ -13,7 +13,6 @@ import pickle
 from tqdm import tqdm
 from utils import AverageMeter
 from model import RecurrentAttention
-from tensorboard_logger import configure, log_value
 
 
 class Trainer(object):
@@ -91,12 +90,12 @@ class Trainer(object):
             os.makedirs(self.plot_dir)
 
         # configure tensorboard logging
-        if self.use_tensorboard:
-            tensorboard_dir = self.logs_dir + self.model_name
-            print('[*] Saving tensorboard logs to {}'.format(tensorboard_dir))
-            if not os.path.exists(tensorboard_dir):
-                os.makedirs(tensorboard_dir)
-            configure(tensorboard_dir)
+        # if self.use_tensorboard:
+        #     tensorboard_dir = self.logs_dir + self.model_name
+        #     print('[*] Saving tensorboard logs to {}'.format(tensorboard_dir))
+        #     if not os.path.exists(tensorboard_dir):
+        #         os.makedirs(tensorboard_dir)
+        #     configure(tensorboard_dir)
 
         # build RAM model
         self.model = RecurrentAttention(
@@ -136,7 +135,7 @@ class Trainer(object):
         h_t = torch.zeros(self.batch_size, self.hidden_size)
         h_t = Variable(h_t).type(dtype)
 
-        l_t = torch.Tensor(self.batch_size, 2).uniform_(-1, 1)
+        l_t = torch.Tensor(self.batch_size, 25).uniform_(-1, 1)
         l_t = Variable(l_t).type(dtype)
 
         return h_t, l_t
@@ -256,7 +255,7 @@ class Trainer(object):
 
                 # calculate reward
                 predicted = torch.max(log_probas, 1)[1]
-                R = (predicted.detach() == y).float()
+                R = (predicted.detach() == y.long()).float()
                 R = R.unsqueeze(1).repeat(1, self.num_glimpses)
 
                 # compute losses for differentiable modules
@@ -277,8 +276,12 @@ class Trainer(object):
                 acc = 100 * (correct.sum() / len(y))
 
                 # store
-                losses.update(loss.data[0], x.size()[0])
-                accs.update(acc.data[0], x.size()[0])
+                try:
+                    losses.update(loss.data[0], x.size()[0])
+                    accs.update(acc.data[0], x.size()[0])
+                except:
+                    losses.update(loss.data.item(), x.size()[0])
+                    accs.update(acc.data.item(), x.size()[0])
 
                 # compute gradients and update SGD
                 self.optimizer.zero_grad()
@@ -289,10 +292,16 @@ class Trainer(object):
                 toc = time.time()
                 batch_time.update(toc-tic)
 
+                try:
+                    loss_data =loss.data[0]
+                    acc_data = acc.data[0]
+                except IndexError:
+                    loss_data = loss.data.item()
+                    acc_data = acc.data.item()
                 pbar.set_description(
                     (
                         "{:.1f}s - loss: {:.3f} - acc: {:.3f}".format(
-                            (toc-tic), loss.data[0], acc.data[0]
+                            (toc-tic), loss_data, acc_data
                         )
                     )
                 )
@@ -406,8 +415,12 @@ class Trainer(object):
             acc = 100 * (correct.sum() / len(y))
 
             # store
-            losses.update(loss.data[0], x.size()[0])
-            accs.update(acc.data[0], x.size()[0])
+            try:
+                losses.update(loss.data[0], x.size()[0])
+                accs.update(acc.data[0], x.size()[0])
+            except:
+                losses.update(loss.data.item(), x.size()[0])
+                accs.update(acc.data.item(), x.size()[0])
 
             # log to tensorboard
             if self.use_tensorboard:
