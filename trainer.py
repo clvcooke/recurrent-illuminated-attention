@@ -13,6 +13,7 @@ import pickle
 from tqdm import tqdm
 from utils import AverageMeter
 from model import RecurrentAttention
+from torch.utils.tensorboard import SummaryWriter
 
 
 class Trainer(object):
@@ -89,13 +90,17 @@ class Trainer(object):
         if not os.path.exists(self.plot_dir):
             os.makedirs(self.plot_dir)
 
-        # configure tensorboard logging
-        # if self.use_tensorboard:
-        #     tensorboard_dir = self.logs_dir + self.model_name
-        #     print('[*] Saving tensorboard logs to {}'.format(tensorboard_dir))
-        #     if not os.path.exists(tensorboard_dir):
-        #         os.makedirs(tensorboard_dir)
-        #     configure(tensorboard_dir)
+        #configure tensorboard logging
+        if self.use_tensorboard:
+            tensorboard_dir = self.logs_dir + self.model_name
+            print('[*] Saving tensorboard logs to {}'.format(tensorboard_dir))
+            if not os.path.exists(tensorboard_dir):
+                os.makedirs(tensorboard_dir)
+            else:
+                import  random
+                tensorboard_dir = tensorboard_dir + str(random.randint(0, 9999999999))
+                os.makedirs(tensorboard_dir)
+            self.writer = SummaryWriter(tensorboard_dir)
 
         # build RAM model
         self.model = RecurrentAttention(
@@ -331,8 +336,8 @@ class Trainer(object):
                 # log to tensorboard
                 if self.use_tensorboard:
                     iteration = epoch*len(self.train_loader) + i
-                    log_value('train_loss', losses.avg, iteration)
-                    log_value('train_acc', accs.avg, iteration)
+                    self.writer.add_scalar('train_loss', losses.avg, iteration)
+                    self.writer.add_scalar('train_acc', accs.avg, iteration)
 
             return losses.avg, accs.avg
 
@@ -425,8 +430,8 @@ class Trainer(object):
             # log to tensorboard
             if self.use_tensorboard:
                 iteration = epoch*len(self.valid_loader) + i
-                log_value('valid_loss', losses.avg, iteration)
-                log_value('valid_acc', accs.avg, iteration)
+                self.writer.add_scalar('valid_loss', losses.avg, iteration)
+                self.writer.add_scalar('valid_acc', accs.avg, iteration)
 
         return losses.avg, accs.avg
 
