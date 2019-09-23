@@ -389,55 +389,26 @@ class Trainer(object):
             baselines = []
             for t in range(self.num_glimpses - 1):
                 # forward pass through model
-                h_t, l_t, b_t, p = self.model(x, l_t, h_t)
+                h_t, l_t, b_t, p, log_probas, log_d, d_t = self.model(x, l_t, h_t)
 
                 # store
                 baselines.append(b_t)
                 log_pi.append(p)
+                # see if we should early exit
+                early_exit = log_probas is not None
+                if early_exit:
+                    break
 
-            # last iteration
-            h_t, l_t, b_t, log_probas, p = self.model(
-                x, l_t, h_t, last=True
-            )
-            log_pi.append(p)
-            baselines.append(b_t)
-
-            # convert list to tensors and reshape
-            baselines = torch.stack(baselines).transpose(1, 0)
-            log_pi = torch.stack(log_pi).transpose(1, 0)
-
-            # average
-            log_probas = log_probas.view(
-                self.M, -1, log_probas.shape[-1]
-            )
-            log_probas = torch.mean(log_probas, dim=0)
-
-            baselines = baselines.contiguous().view(
-                self.M, -1, baselines.shape[-1]
-            )
-            baselines = torch.mean(baselines, dim=0)
-
-            log_pi = log_pi.contiguous().view(
-                self.M, -1, log_pi.shape[-1]
-            )
-            log_pi = torch.mean(log_pi, dim=0)
+            if not early_exit:
+                # last iteration
+                h_t, l_t, b_t, log_probas, p = self.model(
+                    x, l_t, h_t, last=True
+                )
+                log_pi.append(p)
+                baselines.append(b_t)
 
             # calculate reward
             predicted = torch.max(log_probas, 1)[1]
-            R = (predicted.detach() == y).float()
-            R = R.unsqueeze(1).repeat(1, self.num_glimpses)
-
-            # compute losses for differentiable modules
-            loss_action = F.nll_loss(log_probas, y)
-            loss_baseline = F.mse_loss(baselines, R)
-
-            # compute reinforce loss
-            adjusted_reward = R - baselines.detach()
-            loss_reinforce = torch.sum(-log_pi*adjusted_reward, dim=1)
-            loss_reinforce = torch.mean(loss_reinforce, dim=0)
-
-            # sum up into a hybrid loss
-            loss = loss_action + loss_baseline + loss_reinforce
 
             # compute accuracy
             correct = (predicted == y).float()
@@ -445,10 +416,8 @@ class Trainer(object):
 
             # store
             try:
-                losses.update(loss.data[0], x.size()[0])
                 accs.update(acc.data[0], x.size()[0])
             except:
-                losses.update(loss.data.item(), x.size()[0])
                 accs.update(acc.data.item(), x.size()[0])
 
             # log to tensorboard
