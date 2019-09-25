@@ -273,9 +273,16 @@ class Trainer(object):
                 R = (predicted.detach() == y.long()).float()
                 R = R.unsqueeze(1).repeat(1, total_glimpses)
 
+                correct = R[0][0:1].long() == 1
+
                 if early_exit:
                     # if we did exit early we need to know if we made the right call
-                    loss_decision = F.nll_loss(log_d, R[0][0:1].long())
+                    if correct:
+                        # good, you did well, small "reward"
+                        loss_decision = F.nll_loss(log_d, R[0][0:1].long())
+                    else:
+                        # don't be wrong....
+                        loss_decision = F.nll_loss(log_d, R[0][0:1].long())*2
                 else:
                     # if we ran out of time we should have made a decision
                     loss_decision = F.nll_loss(log_d, torch.tensor([1]))
