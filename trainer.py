@@ -16,6 +16,15 @@ from model import RecurrentAttention
 from torch.utils.tensorboard import SummaryWriter
 
 
+LOSS_BALANCE = {
+    'loss_correct': 0.5,
+    'loss_incorrect': 1,
+    'loss_timeout': 1,
+    'reinforce_loss': 1,
+    'classification_loss': 1
+}
+
+
 class Trainer(object):
     """
     Trainer encapsulates all the logic necessary for
@@ -167,6 +176,7 @@ class Trainer(object):
                 '\nEpoch: {}/{} - LR: {:.6f}'.format(
                     epoch+1, self.epochs, self.lr)
             )
+            print('loss_params', LOSS_BALANCE)
 
             # train for 1 epoch
             train_loss, train_acc = self.train_one_epoch(epoch)
@@ -279,16 +289,16 @@ class Trainer(object):
                     # if we did exit early we need to know if we made the right call
                     if correct:
                         # good, you did well, small "reward"
-                        loss_decision = F.nll_loss(log_d, R[0][0:1].long())
+                        loss_decision = F.nll_loss(log_d, R[0][0:1].long())*LOSS_BALANCE['loss_correct']
                     else:
                         # don't be wrong....
-                        loss_decision = F.nll_loss(log_d, R[0][0:1].long())*2
+                        loss_decision = F.nll_loss(log_d, R[0][0:1].long())*LOSS_BALANCE['loss_incorrect']
                 else:
                     # if we ran out of time we should have made a decision
-                    loss_decision = F.nll_loss(log_d, torch.tensor([1]))
+                    loss_decision = F.nll_loss(log_d, torch.tensor([1])) * LOSS_BALANCE['loss_timeout']
 
                 # compute losses for differentiable modules
-                loss_action = F.nll_loss(log_probas, y)
+                loss_action = F.nll_loss(log_probas, y) * LOSS_BALANCE['classification_loss']
                 # convert list to tensors and reshape
                 if len(baselines) > 1:
                     # TODO: this is because we are only doing one batch
@@ -297,13 +307,13 @@ class Trainer(object):
                     baselines = baselines.transpose(1, 0)
                     log_pi = log_pi.transpose(1, 0)
 
-                    loss_baseline = F.mse_loss(baselines, R)
+                    loss_baseline = F.mse_loss(baselines, R) * LOSS_BALANCE['reinforce_loss']
 
                     # compute reinforce loss
                     # summed over timesteps and averaged across batch
                     adjusted_reward = R - baselines.detach()
                     loss_reinforce = torch.sum(-log_pi*adjusted_reward, dim=1)
-                    loss_reinforce = torch.mean(loss_reinforce, dim=0)
+                    loss_reinforce = torch.mean(loss_reinforce, dim=0) * LOSS_BALANCE['reinforce_loss']
 
                     # sum up into a hybrid loss
                     loss = loss_action + loss_baseline +\
