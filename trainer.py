@@ -279,10 +279,10 @@ class Trainer(object):
                     # if we did exit early we need to know if we made the right call
                     if correct:
                         # good, you did well, small "reward"
-                        loss_decision = F.nll_loss(log_d, R[0][0:1].long())
+                        loss_decision = F.nll_loss(log_d, R[0][0:1].long())/2
                     else:
                         # don't be wrong....
-                        loss_decision = F.nll_loss(log_d, R[0][0:1].long())*2
+                        loss_decision = F.nll_loss(log_d, R[0][0:1].long())
                 else:
                     # if we ran out of time we should have made a decision
                     loss_decision = F.nll_loss(log_d, torch.tensor([1]))
