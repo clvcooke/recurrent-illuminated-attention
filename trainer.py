@@ -16,8 +16,8 @@ from torch.utils.tensorboard import SummaryWriter
 
 LOSS_BALANCE = {
     'loss_correct': 1.0,
-    'loss_incorrect': 1,
-    'loss_timeout': 1,
+    'loss_incorrect': 1.0,
+    'loss_timeout': 1.0,
     'reinforce_loss': 1,
     'classification_loss': 1
 }
