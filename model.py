@@ -110,8 +110,6 @@ class RecurrentAttention(nn.Module):
         # 2. log of the product is the sum of the logs
         log_pi = Normal(mu, self.std).log_prob(k_t)
         log_pi = torch.sum(log_pi, dim=1)
-        # TODO figure out batches here.....
-        log_probas = None
-        if d_t == 1 or last:
-            log_probas = self.classifier(h_t)
+        # screw it lets do everything every-time and mask out the consequences
+        log_probas = self.classifier(h_t)
         return h_t, k_t, b_t, log_pi, log_probas, log_d, d_t

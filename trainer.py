@@ -3,7 +3,6 @@ import torch.nn.functional as F
 
 from torch.autograd import Variable
 import torch.optim as optim
-from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 import os
 import time
@@ -15,9 +14,8 @@ from utils import AverageMeter
 from model import RecurrentAttention
 from torch.utils.tensorboard import SummaryWriter
 
-
 LOSS_BALANCE = {
-    'loss_correct': 0.5,
+    'loss_correct': 1.0,
     'loss_incorrect': 1,
     'loss_timeout': 1,
     'reinforce_loss': 1,
@@ -33,6 +31,7 @@ class Trainer(object):
     All hyperparameters are provided by the user in the
     config file.
     """
+
     def __init__(self, config, data_loader):
         """
         Construct a new Trainer instance.
@@ -174,7 +173,7 @@ class Trainer(object):
 
             print(
                 '\nEpoch: {}/{} - LR: {:.6f}'.format(
-                    epoch+1, self.epochs, self.lr)
+                    epoch + 1, self.epochs, self.lr)
             )
             print('loss_params', LOSS_BALANCE)
 
@@ -227,7 +226,7 @@ class Trainer(object):
         losses = AverageMeter()
         accs = AverageMeter()
         glimpses = AverageMeter()
-
+        device = None
         tic = time.time()
         with tqdm(total=self.num_train) as pbar:
             for i, (x, y) in enumerate(self.train_loader):
@@ -235,17 +234,19 @@ class Trainer(object):
                     x, y = x.cuda(), y.cuda()
                 x, y = Variable(x), Variable(y)
 
-                plot = False
                 if (epoch % self.plot_freq == 0) and (i == 0):
                     plot = True
+                plot = False
 
                 # initialize location vector and hidden state
                 self.batch_size = x.shape[0]
                 h_t, l_t = self.reset()
 
-                # save images
-                imgs = []
-                imgs.append(x[0:9])
+                # original implementation did this anyways, what a waste...
+                if plot:
+                    # save images
+                    imgs = []
+                    imgs.append(x[0:9])
 
                 # extract the glimpses
                 locs = []
@@ -253,70 +254,123 @@ class Trainer(object):
                 baselines = []
                 early_exit = False
                 total_glimpses = 0
-                for t in range(self.num_glimpses - 1):
+                # we want to run this loop UNTIL they are all done,
+                # that will involve some "dummy" forward passes
+                # need to track when each element of the batch is actually
+                # done to do proper masking
+
+                # use None so everything errors out if I don't explicitly set it
+                prob_as = [None for _ in range(self.batch_size)]
+                log_ds = [None for _ in range(self.batch_size)]
+                done_indices = [-1 for _ in range(self.batch_size)]
+                timeouts = [False for _ in range(self.batch_size)]
+                glimpse_totals = [None for _ in range(self.batch_size)]
+                for t in range(self.num_glimpses):
                     total_glimpses += 1
                     # forward pass through model
-                    h_t, l_t, b_t, p, log_probas, log_d, d_t = self.model(x, l_t, h_t)
+                    h_t, l_t, b_t, p, prob_a, log_d, d_t = self.model(x, l_t,
+                                                                      h_t)
 
+                    for batch_ind in range(self.batch_size):
+                        if done_indices[batch_ind] > -1:
+                            # already done
+                            continue
+                        elif d_t[batch_ind] == 1:
+                            glimpse_totals[batch_ind] = t + 1
+                            # mark as done
+                            done_indices[batch_ind] = t
+                            # save the log_d
+                            log_ds[batch_ind] = log_d[batch_ind]
+                            # save the prob_a
+                            prob_as[batch_ind] = prob_a[batch_ind]
+                        elif t == self.num_glimpses - 1:
+                            # glimpses are timing out
+                            timeouts[batch_ind] = True
+                            glimpse_totals[batch_ind] = t + 1
+                            # mark as done
+                            done_indices[batch_ind] = t
+                            # save the log_d
+                            log_ds[batch_ind] = log_d[batch_ind]
+                            # save the prob_a
+                            prob_as[batch_ind] = prob_a[batch_ind]
                     # store
-                    locs.append(l_t[0:9])
+                    if plot:
+                        locs.append(l_t[0:9])
                     baselines.append(b_t)
                     log_pi.append(p)
-                    # see if we should early exit
-                    early_exit = log_probas is not None
-                    if early_exit:
+                    if all([done_index > -1 for done_index in done_indices]):
                         break
 
-                if not early_exit:
-                    # last iteration
-                    h_t, l_t, b_t, p, log_probas, _, _= self.model(
-                        x, l_t, h_t, last=True
-                    )
-                    log_pi.append(p)
-                    baselines.append(b_t)
-                    locs.append(l_t[0:9])
-                glimpses.update(total_glimpses)
+                glimpses.update(sum(glimpse_totals) / self.batch_size)
 
+                # now get the correct prob_as, we only saved the good ones :)
+                prob_as = torch.stack(prob_as)
+                log_ds = torch.stack(log_ds)
+
+                if device is None:
+                    if prob_as.is_cuda:
+                        device = torch.device('cuda')
+                    else:
+                        device = torch.device('cpu')
 
                 # calculate reward
-                predicted = torch.max(log_probas, 1)[1]
+                predicted = torch.max(prob_as, 1)[1]
                 R = (predicted.detach() == y.long()).float()
                 R = R.unsqueeze(1).repeat(1, total_glimpses)
 
-                correct = R[0][0:1].long() == 1
+                # calculate "single" losses,
+                # losses that only apply to the last valid time-step
 
-                if early_exit:
-                    # if we did exit early we need to know if we made the right call
-                    if correct:
-                        # good, you did well, small "reward"
-                        loss_decision = F.nll_loss(log_d, R[0][0:1].long())*LOSS_BALANCE['loss_correct']
+                # first construct a target vector based on the outcome
+                decision_target = []
+                decision_scaling = []
+                for batch_ind in range(self.batch_size):
+                    if timeouts[batch_ind]:
+                        decision_target.append(1)
+                        decision_scaling.append(LOSS_BALANCE['loss_timeout'])
+                    elif R[batch_ind][0] == 1:
+                        decision_target.append(1)
+                        decision_scaling.append(LOSS_BALANCE['loss_correct'])
+                    elif R[batch_ind][0] == 0:
+                        decision_target.append(0)
+                        decision_scaling.append(LOSS_BALANCE['loss_incorrect'])
                     else:
-                        # don't be wrong....
-                        loss_decision = F.nll_loss(log_d, R[0][0:1].long())*LOSS_BALANCE['loss_incorrect']
-                else:
-                    # if we ran out of time we should have made a decision
-                    loss_decision = F.nll_loss(log_d, torch.tensor([1])) * LOSS_BALANCE['loss_timeout']
-
+                        raise RuntimeError("how did we get here?")
+                decision_target = torch.tensor(decision_target, device=device)
+                decision_scaling = torch.tensor(decision_scaling, device=device)
+                # now take the error between our decision target and log_ds
+                loss_decision = (F.nll_loss(log_ds, decision_target,
+                                            reduction='none') * decision_scaling).mean()
                 # compute losses for differentiable modules
-                loss_action = F.nll_loss(log_probas, y) * LOSS_BALANCE['classification_loss']
+                loss_action = F.nll_loss(prob_a, y) * LOSS_BALANCE[
+                    'classification_loss']
                 # convert list to tensors and reshape
                 if len(baselines) > 1:
-                    # TODO: this is because we are only doing one batch
-                    baselines = torch.stack(baselines).reshape(1, -1)
-                    log_pi = torch.stack(log_pi).reshape(1, -1)
-                    baselines = baselines.transpose(1, 0)
-                    log_pi = log_pi.transpose(1, 0)
 
-                    loss_baseline = F.mse_loss(baselines, R) * LOSS_BALANCE['reinforce_loss']
+                    # construct a mask because the steps vary
+                    # mask will be (batch_size,total_glimpses) in size
+                    loss_masks = torch.zeros((self.batch_size, total_glimpses),
+                                             requires_grad=False, device=device)
+                    # TODO vectorize this operation
+                    for b in range(self.batch_size):
+                        end_index = done_indices[b] + 1
+                        loss_masks[b, :end_index] = 1
+
+                    baselines = torch.stack(baselines).transpose(1, 0)
+                    log_pi = torch.stack(log_pi).transpose(1, 0)
+
+                    loss_baseline = F.mse_loss(baselines * loss_masks,
+                                               R * loss_masks) * LOSS_BALANCE[
+                                        'reinforce_loss']
 
                     # compute reinforce loss
                     # summed over timesteps and averaged across batch
                     adjusted_reward = R - baselines.detach()
-                    loss_reinforce = torch.sum(-log_pi*adjusted_reward, dim=1)
-                    loss_reinforce = torch.mean(loss_reinforce, dim=0) * LOSS_BALANCE['reinforce_loss']
-
+                    loss_reinforce = torch.sum(-log_pi * adjusted_reward, dim=1)
+                    loss_reinforce = torch.mean(loss_reinforce, dim=0) * \
+                                     LOSS_BALANCE['reinforce_loss']
                     # sum up into a hybrid loss
-                    loss = loss_action + loss_baseline +\
+                    loss = loss_action + loss_baseline + \
                            loss_reinforce + loss_decision
                 else:
                     loss = loss_action + loss_decision
@@ -326,12 +380,11 @@ class Trainer(object):
                 acc = 100 * (correct.sum() / len(y))
 
                 # store
+                accs.update(acc.data.item())
                 try:
                     losses.update(loss.data[0], x.size()[0])
-                    accs.update(acc.data[0], x.size()[0])
                 except:
                     losses.update(loss.data.item(), x.size()[0])
-                    accs.update(acc.data.item(), x.size()[0])
 
                 # compute gradients and update SGD
                 self.optimizer.zero_grad()
@@ -340,10 +393,10 @@ class Trainer(object):
 
                 # measure elapsed time
                 toc = time.time()
-                batch_time.update(toc-tic)
+                batch_time.update(toc - tic)
 
                 try:
-                    loss_data =loss.data[0]
+                    loss_data = loss.data[0]
                     acc_data = acc.data[0]
                 except IndexError:
                     loss_data = loss.data.item()
@@ -351,7 +404,7 @@ class Trainer(object):
                 pbar.set_description(
                     (
                         "{:.1f}s - loss: {:.3f} - acc: {:.3f}, glm {:.3f}".format(
-                            (toc-tic), losses.avg, accs.avg, glimpses.avg
+                            (toc - tic), losses.avg, accs.avg, glimpses.avg
                         )
                     )
                 )
@@ -367,20 +420,20 @@ class Trainer(object):
                         locs = [l.data.numpy() for l in locs]
                     pickle.dump(
                         imgs, open(
-                            self.plot_dir + "g_{}.p".format(epoch+1),
+                            self.plot_dir + "g_{}.p".format(epoch + 1),
                             "wb"
                         )
                     )
                     pickle.dump(
                         locs, open(
-                            self.plot_dir + "l_{}.p".format(epoch+1),
+                            self.plot_dir + "l_{}.p".format(epoch + 1),
                             "wb"
                         )
                     )
 
                 # log to tensorboard
                 if self.use_tensorboard:
-                    iteration = epoch*len(self.train_loader) + i
+                    iteration = epoch * len(self.train_loader) + i
                     self.writer.add_scalar('train_loss', losses.avg, iteration)
                     self.writer.add_scalar('train_acc', accs.avg, iteration)
 
@@ -410,7 +463,8 @@ class Trainer(object):
             baselines = []
             for t in range(self.num_glimpses - 1):
                 # forward pass through model
-                h_t, l_t, b_t, p, log_probas, log_d, d_t = self.model(x, l_t, h_t)
+                h_t, l_t, b_t, p, log_probas, log_d, d_t = self.model(x, l_t,
+                                                                      h_t)
 
                 # store
                 baselines.append(b_t)
@@ -443,7 +497,7 @@ class Trainer(object):
 
             # log to tensorboard
             if self.use_tensorboard:
-                iteration = epoch*len(self.valid_loader) + i
+                iteration = epoch * len(self.valid_loader) + i
                 self.writer.add_scalar('valid_loss', losses.avg, iteration)
                 self.writer.add_scalar('valid_acc', accs.avg, iteration)
 
