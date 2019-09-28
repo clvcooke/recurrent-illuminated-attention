@@ -12,7 +12,6 @@ import pickle
 from tqdm import tqdm
 from utils import AverageMeter
 from model import RecurrentAttention
-from torch.utils.tensorboard import SummaryWriter
 
 LOSS_BALANCE = {
     'loss_correct': 1.0,
@@ -108,7 +107,6 @@ class Trainer(object):
                 import  random
                 tensorboard_dir = tensorboard_dir + str(random.randint(0, 9999999999))
                 os.makedirs(tensorboard_dir)
-            self.writer = SummaryWriter(tensorboard_dir)
 
         # build RAM model
         self.model = RecurrentAttention(
@@ -181,22 +179,19 @@ class Trainer(object):
             train_loss, train_acc = self.train_one_epoch(epoch)
 
             # evaluate on validation set
-            # valid_loss, valid_acc = self.validate(epoch)
-            print("BAD HACK")
-            valid_acc = train_acc
-            valid_loss = train_loss
+            valid_loss, valid_acc, valid_glm = self.validate(epoch)
 
             # # reduce lr if validation loss plateaus
             # self.scheduler.step(valid_loss)
 
             is_best = valid_acc > self.best_valid_acc
             msg1 = "train loss: {:.3f} - train acc: {:.3f} "
-            msg2 = "- val loss: {:.3f} - val acc: {:.3f}"
+            msg2 = "- val loss: {:.3f} - val acc: {:.3f} - val vlm: {:.3f}"
             if is_best:
                 self.counter = 0
                 msg2 += " [*]"
             msg = msg1 + msg2
-            print(msg.format(train_loss, train_acc, valid_loss, valid_acc))
+            print(msg.format(train_loss, train_acc, valid_loss, valid_acc, valid_glm))
 
             # check for improvement
             if not is_best:
@@ -245,14 +240,12 @@ class Trainer(object):
                 # original implementation did this anyways, what a waste...
                 if plot:
                     # save images
-                    imgs = []
-                    imgs.append(x[0:9])
+                    imgs = [x[0:9]]
 
                 # extract the glimpses
                 locs = []
                 log_pi = []
                 baselines = []
-                early_exit = False
                 total_glimpses = 0
                 # we want to run this loop UNTIL they are all done,
                 # that will involve some "dummy" forward passes
@@ -434,8 +427,6 @@ class Trainer(object):
                 # log to tensorboard
                 if self.use_tensorboard:
                     iteration = epoch * len(self.train_loader) + i
-                    self.writer.add_scalar('train_loss', losses.avg, iteration)
-                    self.writer.add_scalar('train_acc', accs.avg, iteration)
 
             return losses.avg, accs.avg
 
@@ -445,6 +436,8 @@ class Trainer(object):
         """
         losses = AverageMeter()
         accs = AverageMeter()
+        batch_time = AverageMeter()
+        glimpses = AverageMeter()
 
         for i, (x, y) in enumerate(self.valid_loader):
             if self.use_gpu:
@@ -455,35 +448,60 @@ class Trainer(object):
             # x = x.repeat(self.M, 1, 1, 1)
 
             # initialize location vector and hidden state
-            # self.batch_size = x.shape[0]
+            self.batch_size = x.shape[0]
             h_t, l_t = self.reset()
 
             # extract the glimpses
             log_pi = []
             baselines = []
-            for t in range(self.num_glimpses - 1):
-                # forward pass through model
-                h_t, l_t, b_t, p, log_probas, log_d, d_t = self.model(x, l_t,
-                                                                      h_t)
 
-                # store
+            prob_as = [None for _ in range(self.batch_size)]
+            log_ds = [None for _ in range(self.batch_size)]
+            done_indices = [-1 for _ in range(self.batch_size)]
+            timeouts = [False for _ in range(self.batch_size)]
+            glimpse_totals = [None for _ in range(self.batch_size)]
+            total_glimpses = 0
+            for t in range(self.num_glimpses):
+                total_glimpses += 1
+                # forward pass through model
+                h_t, l_t, b_t, p, prob_a, log_d, d_t = self.model(x, l_t,
+                                                                  h_t)
+
+                for batch_ind in range(self.batch_size):
+                    if done_indices[batch_ind] > -1:
+                        # already done
+                        continue
+                    elif d_t[batch_ind] == 1:
+                        glimpse_totals[batch_ind] = t + 1
+                        # mark as done
+                        done_indices[batch_ind] = t
+                        # save the log_d
+                        log_ds[batch_ind] = log_d[batch_ind]
+                        # save the prob_a
+                        prob_as[batch_ind] = prob_a[batch_ind]
+                    elif t == self.num_glimpses - 1:
+                        # glimpses are timing out
+                        timeouts[batch_ind] = True
+                        glimpse_totals[batch_ind] = t + 1
+                        # mark as done
+                        done_indices[batch_ind] = t
+                        # save the log_d
+                        log_ds[batch_ind] = log_d[batch_ind]
+                        # save the prob_a
+                        prob_as[batch_ind] = prob_a[batch_ind]
+
                 baselines.append(b_t)
                 log_pi.append(p)
-                # see if we should early exit
-                early_exit = log_probas is not None
-                if early_exit:
+                if all([done_index > -1 for done_index in done_indices]):
                     break
 
-            if not early_exit:
-                # last iteration
-                h_t, l_t, b_t, log_probas, p = self.model(
-                    x, l_t, h_t, last=True
-                )
-                log_pi.append(p)
-                baselines.append(b_t)
+            glimpses.update(sum(glimpse_totals) / self.batch_size)
+
+            # now get the correct prob_as, we only saved the good ones :)
+            prob_as = torch.stack(prob_as)
 
             # calculate reward
-            predicted = torch.max(log_probas, 1)[1]
+            predicted = torch.max(prob_as, 1)[1]
 
             # compute accuracy
             correct = (predicted == y).float()
@@ -495,13 +513,7 @@ class Trainer(object):
             except:
                 accs.update(acc.data.item(), x.size()[0])
 
-            # log to tensorboard
-            if self.use_tensorboard:
-                iteration = epoch * len(self.valid_loader) + i
-                self.writer.add_scalar('valid_loss', losses.avg, iteration)
-                self.writer.add_scalar('valid_acc', accs.avg, iteration)
-
-        return losses.avg, accs.avg
+        return losses.avg, accs.avg, glimpses.avg
 
     def test(self):
         """
