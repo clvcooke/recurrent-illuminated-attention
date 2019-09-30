@@ -413,8 +413,8 @@ class illumination_network(nn.Module):
         log_pi = torch.sum(log_pi, dim=1)
 
         k_t = torch.tanh(sample)
-        if self.iteration % 1000 == 1:
-            print(logstd)
+        if self.iteration % 10000 == 1:
+            print(logstd[0])
 
         return mu, k_t, log_pi
 
