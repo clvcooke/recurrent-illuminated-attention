@@ -14,7 +14,7 @@ from utils import AverageMeter
 from model import RecurrentAttention
 
 LOSS_BALANCE = {
-    'loss_correct': 1.0,
+    'loss_correct': 0.5,
     'loss_incorrect': 1.0,
     'loss_timeout': 1.0,
     'reinforce_loss': 1,
@@ -113,6 +113,7 @@ class Trainer(object):
             self.patch_size, self.num_patches, self.glimpse_scale,
             self.num_channels, self.loc_hidden, self.glimpse_hidden,
             self.std, self.hidden_size, self.num_classes,
+            self.config.learn_std
         )
         if self.use_gpu:
             self.model.cuda()

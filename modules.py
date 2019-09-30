@@ -50,7 +50,10 @@ class retina(object):
         phi = self.extract_k_stack(x, k)
 
         # post processing as in normalize?
-        return phi.view((phi.shape[0], -1))
+        # phi = phi.view((phi.shape[0], -1)).half().float()
+        phi = phi.half().float()
+
+        return (phi - phi.mean()) / phi.std()
 
     def foveate(self, x, l):
         """
@@ -244,7 +247,18 @@ class glimpse_network(nn.Module):
         self.retina = retina(g, k, s)
 
         # glimpse layer
+        D_in = 16*3*3
         D_in = 28*28
+        self.cnn = nn.Sequential(
+            nn.Conv2d(1, 4, kernel_size=3, stride=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2,stride=2),
+            nn.Conv2d(4, 8, kernel_size=3, stride=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2, stride=2),
+            nn.Conv2d(8, 16, kernel_size=3, stride=1),
+            nn.ReLU()
+        )
         self.fc1 = nn.Linear(D_in, h_g)
 
         # location layer
@@ -261,8 +275,11 @@ class glimpse_network(nn.Module):
         # flatten illumination vector
         k_t_prev = k_t_prev.view(k_t_prev.size(0), -1)
 
+        # processed = self.cnn(phi.view(-1, 1, 28, 28)).view(-1, 16*3*3)
+        processed = phi.view(-1, 28*28)
+
         # feed phi and k into respective fc layers
-        phi_out = torch.relu(self.fc1(phi))
+        phi_out = torch.relu(self.fc1(processed))
         k_out = torch.relu(self.fc2(k_t_prev))
 
         what = self.fc3(phi_out)
@@ -375,9 +392,9 @@ class decision_network(nn.Module):
 
 # Necessary for my KFAC implementation.
 class AddBias(nn.Module):
-    def __init__(self, bias):
+    def __init__(self, bias, trainable):
         super(AddBias, self).__init__()
-        self._bias = nn.Parameter(bias.unsqueeze(1))
+        self._bias = nn.Parameter(bias.unsqueeze(1), requires_grad=trainable)
 
     def forward(self, x):
         if x.dim() == 2:
@@ -389,11 +406,10 @@ class AddBias(nn.Module):
 
 class illumination_network(nn.Module):
 
-    def __init__(self, input_size, output_size, std):
+    def __init__(self, input_size, output_size, std, learn_std):
         super(illumination_network, self).__init__()
-        self.std = std
         self.fc = nn.Linear(input_size, output_size)
-        self.logstd = AddBias(torch.ones(output_size)*np.log(std))
+        self.logstd = AddBias(torch.ones(output_size)*np.log(std), learn_std)
         self.iteration = 0
 
     def forward(self, h_t):
@@ -413,8 +429,6 @@ class illumination_network(nn.Module):
         log_pi = torch.sum(log_pi, dim=1)
 
         k_t = torch.tanh(sample)
-        if self.iteration % 1000 == 1:
-            print(logstd)
 
         return mu, k_t, log_pi
 
