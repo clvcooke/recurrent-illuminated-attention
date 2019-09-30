@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.distributions import Categorical
 
 from torch.autograd import Variable
 
@@ -349,6 +350,25 @@ class action_network(nn.Module):
     def forward(self, h_t):
         a_t = F.log_softmax(self.fc(h_t), dim=1)
         return a_t
+
+
+class decision_network(nn.Module):
+
+    def __init__(self, input_size, output_size):
+        super(decision_network, self).__init__()
+        self.fc_1 = nn.Linear(input_size, input_size)
+        self.fc_2 = nn.Linear(input_size, output_size)
+
+    def forward(self, h_t):
+        x = torch.tanh(self.fc_1(h_t))
+        probs = torch.softmax(self.fc_2(x), dim=1)
+        try:
+            sample = Categorical(probs=probs).sample()
+        except:
+            probs = torch.softmax(probs + 1, dim=1)
+            sample = Categorical(probs=probs).sample()
+        probs = torch.log(probs)
+        return sample, probs
 
 
 class illumination_network(nn.Module):

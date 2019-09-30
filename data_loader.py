@@ -58,6 +58,13 @@ def get_train_valid_loader(data_dir,
 
     datapath_train_images = r"C:\Users\clvco\Documents\Code\K-space_rl-data\train_data_norm_v2.npy"
     datapath_train_labels = r"C:\Users\clvco\Documents\Code\K-space_rl-data\train_labels.npy"
+    import os
+    if not os.path.exists(datapath_train_images):
+        datapath_train_images = '/home/col/data/train_data_norm_v2.npy'
+        datapath_train_labels = '/home/col/data/train_labels.npy'
+    if not os.path.exists(datapath_train_images):
+        datapath_train_images = '/home/data/datasets/colin/k-space-rl/train_data_norm_v2.npy'
+        datapath_train_labels = '/home/data/datasets/colin/k-space-rl/train_labels.npy'
 
     data_x= torch.from_numpy(np.load(datapath_train_images).swapaxes(0, 1).reshape((-1, 28, 28, 25))).float()
     data_y = torch.from_numpy(np.argmax(np.load(datapath_train_labels), axis=-1))

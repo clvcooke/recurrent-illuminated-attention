@@ -48,7 +48,7 @@ reinforce_arg.add_argument('--M', type=float, default=10,
 data_arg = add_argument_group('Data Params')
 data_arg.add_argument('--valid_size', type=float, default=0.1,
                       help='Proportion of training set used for validation')
-data_arg.add_argument('--batch_size', type=int, default=32,
+data_arg.add_argument('--batch_size', type=int, default=2,
                       help='# of images in each batch of data')
 data_arg.add_argument('--num_workers', type=int, default=4,
                       help='# of subprocesses to use for data loading')
@@ -76,7 +76,7 @@ train_arg.add_argument('--train_patience', type=int, default=50,
 
 # other params
 misc_arg = add_argument_group('Misc.')
-misc_arg.add_argument('--use_gpu', type=str2bool, default=True,
+misc_arg.add_argument('--use_gpu', type=str2bool, default=False,
                       help="Whether to run on the GPU")
 misc_arg.add_argument('--best', type=str2bool, default=True,
                       help='Load best model or most recent for testing')
@@ -94,7 +94,7 @@ misc_arg.add_argument('--resume', type=str2bool, default=False,
                       help='Whether to resume training from checkpoint')
 misc_arg.add_argument('--print_freq', type=int, default=10,
                       help='How frequently to print training details')
-misc_arg.add_argument('--plot_freq', type=int, default=1,
+misc_arg.add_argument('--plot_freq', type=int, default=1000000,
                       help='How frequently to plot glimpses')
 
 

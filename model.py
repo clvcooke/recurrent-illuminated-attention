@@ -5,7 +5,7 @@ from torch.distributions import Normal
 
 from modules import baseline_network
 from modules import glimpse_network, core_network
-from modules import action_network, illumination_network
+from modules import action_network, illumination_network, decision_network
 
 
 class RecurrentAttention(nn.Module):
@@ -59,6 +59,7 @@ class RecurrentAttention(nn.Module):
         self.illuminator = illumination_network(hidden_size, 25, std)
         self.classifier = action_network(hidden_size, num_classes)
         self.baseliner = baseline_network(hidden_size, 1)
+        self.decider = decision_network(hidden_size, 2)
 
     def forward(self, x, k_t_prev, h_t_prev, last=False):
         """
@@ -101,6 +102,7 @@ class RecurrentAttention(nn.Module):
         h_t = self.rnn(g_t, h_t_prev)
 
         mu, k_t = self.illuminator(h_t)
+        d_t, log_d = self.decider(h_t)
 
         b_t = self.baseliner(h_t).squeeze()
         # we assume both dimensions are independent
@@ -108,9 +110,6 @@ class RecurrentAttention(nn.Module):
         # 2. log of the product is the sum of the logs
         log_pi = Normal(mu, self.std).log_prob(k_t)
         log_pi = torch.sum(log_pi, dim=1)
-
-        if last:
-            log_probas = self.classifier(h_t)
-            return h_t, k_t, b_t, log_probas, log_pi
-
-        return h_t, k_t, b_t, log_pi
+        # screw it lets do everything every-time and mask out the consequences
+        log_probas = self.classifier(h_t)
+        return h_t, k_t, b_t, log_pi, log_probas, log_d, d_t
