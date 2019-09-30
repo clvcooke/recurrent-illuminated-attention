@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from torch.distributions import Categorical
 
 from torch.autograd import Variable
+from torch.distributions import Normal
 
 import numpy as np
 
@@ -371,25 +372,51 @@ class decision_network(nn.Module):
         return sample, probs
 
 
+
+# Necessary for my KFAC implementation.
+class AddBias(nn.Module):
+    def __init__(self, bias):
+        super(AddBias, self).__init__()
+        self._bias = nn.Parameter(bias.unsqueeze(1))
+
+    def forward(self, x):
+        if x.dim() == 2:
+            bias = self._bias.t().view(1, -1)
+        else:
+            bias = self._bias.t().view(1, -1, 1, 1)
+
+        return x + bias
+
 class illumination_network(nn.Module):
 
     def __init__(self, input_size, output_size, std):
         super(illumination_network, self).__init__()
         self.std = std
         self.fc = nn.Linear(input_size, output_size)
+        self.logstd = AddBias(torch.ones(output_size)*np.log(std))
+        self.iteration = 0
 
     def forward(self, h_t):
+        self.iteration += 1
         # compute mean
         mu = torch.tanh(self.fc(h_t.detach()))
 
-        # reparametrization trick
-        noise = torch.zeros_like(mu)
-        noise.data.normal_(std=self.std)
-        k_t = mu + noise
-        # bound between [-1, 1]
-        k_t = torch.tanh(k_t)
+        zeros = torch.zeros(mu.size())
+        if mu.is_cuda:
+            zeros = zeros.cuda()
 
-        return mu, k_t
+        logstd = self.logstd(zeros)
+
+        dist = Normal(mu, logstd.exp())
+        sample = dist.sample()
+        log_pi = dist.log_prob(sample)
+        log_pi = torch.sum(log_pi, dim=1)
+
+        k_t = torch.tanh(sample)
+        if self.iteration % 1000 == 1:
+            print(logstd)
+
+        return mu, k_t, log_pi
 
 class location_network(nn.Module):
     """
