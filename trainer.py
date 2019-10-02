@@ -14,7 +14,7 @@ from utils import AverageMeter
 from model import RecurrentAttention
 
 LOSS_BALANCE = {
-    'loss_correct': 0.5,
+    'loss_correct': 0.01,
     'loss_incorrect': 1.0,
     'loss_timeout': 1.0,
     'reinforce_loss': 1,

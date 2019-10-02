@@ -56,8 +56,21 @@ def get_train_valid_loader(data_dir,
     error_msg = "[!] valid_size should be in the range [0, 1]."
     assert ((valid_size >= 0) and (valid_size <= 1)), error_msg
 
-    datapath_train_images = r"C:\Users\clvco\Documents\Code\K-space_rl-data\train_data_norm_v2.npy"
-    datapath_train_labels = r"C:\Users\clvco\Documents\Code\K-space_rl-data\train_labels.npy"
+
+    fashion = True
+    malaria = False
+    if fashion:
+        datapath_train_images = r"C:\Users\clvco\Documents\Code\K-space_rl-data\Fashion\fashion_train_norm.npy"
+        datapath_test_images =  r"C:\Users\clvco\Documents\Code\K-space_rl-data\Fashion\fashion_test_norm.npy"
+        datapath_train_labels = r"C:\Users\clvco\Documents\Code\K-space_rl-data\Fashion\fashion_train_labels.npy"
+        datapath_test_labels = r"C:\Users\clvco\Documents\Code\K-space_rl-data\Fashion\fashion_test_labels.npy"
+    elif malaria:
+        datapath_train_images = r"C:\Users\clvco\Documents\Code\K-space_rl-data\malaria_norm.npy"
+        datapath_train_labels = r"C:\Users\clvco\Documents\Code\K-space_rl-data\Fashion\malaria_labels.npy"
+    else:
+        datapath_train_images = r"C:\Users\clvco\Documents\Code\K-space_rl-data\train_data_norm_v2.npy"
+        datapath_train_labels = r"C:\Users\clvco\Documents\Code\K-space_rl-data\train_labels.npy"
+
     import os
     if not os.path.exists(datapath_train_images):
         datapath_train_images = '/home/col/data/train_data_norm_v2.npy'
@@ -66,35 +79,78 @@ def get_train_valid_loader(data_dir,
         datapath_train_images = '/home/data/datasets/colin/k-space-rl/train_data_norm_v2.npy'
         datapath_train_labels = '/home/data/datasets/colin/k-space-rl/train_labels.npy'
 
-    data_x= torch.from_numpy(np.load(datapath_train_images).swapaxes(0, 1).reshape((-1, 28, 28, 25))).float()
-    data_y = torch.from_numpy(np.argmax(np.load(datapath_train_labels), axis=-1))
+
+    if fashion:
+        data_x = torch.from_numpy(
+            np.load(datapath_train_images).reshape(
+                (-1, 28, 28, 25))).float()
+        data_x_test = torch.from_numpy(
+            np.load(datapath_test_images).reshape(
+                (-1, 28, 28, 25))).float()
+    else:
+        data_x = torch.from_numpy(
+            np.load(datapath_train_images).swapaxes(0, 1).reshape(
+                (-1, 28, 28, 25))).float()
+
+    try:
+        data_y = torch.from_numpy(np.argmax(np.load(datapath_train_labels), axis=-1))
+    except:
+        data_y = torch.from_numpy(np.load(datapath_train_labels))
+        test_y = torch.from_numpy(np.load(datapath_test_labels))
 
 
+    if not fashion:
+        num_train = data_x.shape[0]
+        indices = list(range(num_train))
+        split = int(np.floor(valid_size * num_train))
 
-    num_train = data_x.shape[0]
-    indices = list(range(num_train))
-    split = int(np.floor(valid_size * num_train))
+        if shuffle:
+            np.random.seed(random_seed)
+            np.random.shuffle(indices)
 
-    if shuffle:
-        np.random.seed(random_seed)
-        np.random.shuffle(indices)
+        train_idx, valid_idx = indices[split:], indices[:split]
 
-    train_idx, valid_idx = indices[split:], indices[:split]
+        train_sampler = SubsetRandomSampler(train_idx)
+        valid_sampler = SubsetRandomSampler(valid_idx)
 
-    train_sampler = SubsetRandomSampler(train_idx)
-    valid_sampler = SubsetRandomSampler(valid_idx)
+        dataset = CustomDataset(data_x, data_y)
 
-    dataset = CustomDataset(data_x, data_y)
+        train_loader = torch.utils.data.DataLoader(
+            dataset, batch_size=batch_size, sampler=train_sampler,
+            num_workers=num_workers, pin_memory=pin_memory,
+        )
 
-    train_loader = torch.utils.data.DataLoader(
-        dataset, batch_size=batch_size, sampler=train_sampler,
-        num_workers=num_workers, pin_memory=pin_memory,
-    )
+        valid_loader = torch.utils.data.DataLoader(
+            dataset, batch_size=batch_size, sampler=valid_sampler,
+            num_workers=num_workers, pin_memory=pin_memory,
+        )
+    else:
+        num_train = data_x.shape[0]
+        num_test = data_x_test.shape[0]
+        indices = list(range(num_train))
+        test_indices = list(range(num_test))
+        if shuffle:
+            np.random.seed(random_seed)
+            np.random.shuffle(indices)
 
-    valid_loader = torch.utils.data.DataLoader(
-        dataset, batch_size=batch_size, sampler=valid_sampler,
-        num_workers=num_workers, pin_memory=pin_memory,
-    )
+        train_idx = indices
+        valid_idx = test_indices
+
+        train_sampler = SubsetRandomSampler(train_idx)
+        valid_sampler = SubsetRandomSampler(valid_idx)
+
+        dataset = CustomDataset(data_x, data_y)
+        dataset_val = CustomDataset(data_x_test, test_y)
+
+        train_loader = torch.utils.data.DataLoader(
+            dataset, batch_size=batch_size, sampler=train_sampler,
+            num_workers=num_workers, pin_memory=pin_memory,
+        )
+
+        valid_loader = torch.utils.data.DataLoader(
+            dataset_val, batch_size=batch_size, sampler=valid_sampler,
+            num_workers=num_workers, pin_memory=pin_memory,
+        )
 
     # visualize some images
     if show_sample:

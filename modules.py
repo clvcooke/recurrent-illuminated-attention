@@ -54,6 +54,7 @@ class retina(object):
         phi = phi.half().float()
 
         return (phi - phi.mean()) / phi.std()
+        # return phi
 
     def foveate(self, x, l):
         """
@@ -247,18 +248,7 @@ class glimpse_network(nn.Module):
         self.retina = retina(g, k, s)
 
         # glimpse layer
-        D_in = 16*3*3
         D_in = 28*28
-        self.cnn = nn.Sequential(
-            nn.Conv2d(1, 4, kernel_size=3, stride=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2,stride=2),
-            nn.Conv2d(4, 8, kernel_size=3, stride=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2, stride=2),
-            nn.Conv2d(8, 16, kernel_size=3, stride=1),
-            nn.ReLU()
-        )
         self.fc1 = nn.Linear(D_in, h_g)
 
         # location layer
