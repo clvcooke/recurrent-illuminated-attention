@@ -249,8 +249,8 @@ class glimpse_network(nn.Module):
         D_in = 25
         self.fc2 = nn.Linear(D_in, h_l)
 
-        self.fc3 = nn.Linear(h_g, h_g+h_l)
-        self.fc4 = nn.Linear(h_l, h_g+h_l)
+        self.fc3 = nn.Linear(h_g, h_g)
+        self.fc4 = nn.Linear(h_l, h_g)
 
     def forward(self, x, k_t_prev):
         # generate k-sample phi from image x
@@ -360,16 +360,22 @@ class illumination_network(nn.Module):
 
     def forward(self, h_t):
         # compute mean
-        mu = torch.tanh(self.fc(h_t.detach()))
-
+        mu = self.fc(h_t.detach())
+        mu = torch.clamp(mu, -1, 1)
         # reparametrization trick
         noise = torch.zeros_like(mu)
         noise.data.normal_(std=self.std)
         k_t = mu + noise
         # bound between [-1, 1]
-        k_t = torch.tanh(k_t)
+        k_t = torch.clamp(k_t, -1, 1)
+        from torch.distributions import Normal
 
-        return mu, k_t
+        log_pi = Normal(mu, self.std).log_prob(k_t)
+        log_pi = torch.sum(log_pi, dim=1)
+
+        # k_t = torch.tanh(k_t)
+
+        return mu, k_t, log_pi
 
 class location_network(nn.Module):
     """
@@ -417,8 +423,12 @@ class location_network(nn.Module):
 
         # bound between [-1, 1]
         l_t = F.tanh(l_t)
+        from torch.distributions import Normal
 
-        return mu, l_t
+        log_pi = Normal(mu, self.std).log_prob(l_t)
+        log_pi = torch.sum(log_pi, dim=1)
+
+        return mu, l_t, log_pi
 
 
 class baseline_network(nn.Module):

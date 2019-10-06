@@ -117,7 +117,7 @@ class Trainer(object):
         #     self.optimizer, 'min', patience=self.lr_patience
         # )
         self.optimizer = optim.Adam(
-            self.model.parameters(), lr=3e-4,
+            self.model.parameters(), lr=1e-3,
         )
 
     def reset(self):
@@ -195,6 +195,11 @@ class Trainer(object):
                  'best_valid_acc': self.best_valid_acc,
                  }, is_best
             )
+            # decay
+            # for param_group in self.optimizer.param_groups:
+            #     old_lr = param_group['lr']
+            #     param_group['lr'] = param_group['lr']*0.97
+            # print(f"Reducing LR from {old_lr} to {old_lr*0.97}")
 
     def train_one_epoch(self, epoch):
         """
@@ -212,80 +217,89 @@ class Trainer(object):
         tic = time.time()
         with tqdm(total=self.num_train) as pbar:
             for i, (x, y) in enumerate(self.train_loader):
-                if self.use_gpu:
-                    x, y = x.cuda(), y.cuda()
-                x, y = Variable(x), Variable(y)
+                M = 4
+                loss = None
+                for m in range(M):
+                    if self.use_gpu:
+                        x, y = x.cuda(), y.cuda()
+                    x, y = Variable(x), Variable(y)
 
-                plot = False
-                if (epoch % self.plot_freq == 0) and (i == 0):
-                    plot = True
+                    plot = False
+                    if (epoch % self.plot_freq == 0) and (i == 0):
+                        plot = True
 
-                # initialize location vector and hidden state
-                self.batch_size = x.shape[0]
-                h_t, l_t = self.reset()
+                    # initialize location vector and hidden state
+                    self.batch_size = x.shape[0]
+                    h_t, l_t = self.reset()
+                    h_t = None
 
-                # save images
-                imgs = []
-                imgs.append(x[0:9])
+                    # save images
+                    imgs = []
+                    imgs.append(x[0:9])
 
-                # extract the glimpses
-                locs = []
-                log_pi = []
-                baselines = []
-                for t in range(self.num_glimpses - 1):
-                    # forward pass through model
-                    h_t, l_t, b_t, p = self.model(x, l_t, h_t)
+                    # extract the glimpses
+                    locs = []
+                    log_pi = []
+                    baselines = []
+                    for t in range(self.num_glimpses - 1):
+                        # forward pass through model
+                        h_t, l_t, b_t, p = self.model(x, l_t, h_t)
+
+                        # store
+                        locs.append(l_t[0:9])
+                        baselines.append(b_t)
+                        log_pi.append(p)
+
+                    # last iteration
+                    h_t, l_t, b_t, log_probas, p = self.model(
+                        x, l_t, h_t, last=True
+                    )
+                    log_pi.append(p)
+                    baselines.append(b_t)
+                    locs.append(l_t[0:9])
+
+                    # convert list to tensors and reshape
+                    baselines = torch.stack(baselines).transpose(1, 0)
+                    log_pi = torch.stack(log_pi).transpose(1, 0)
+
+                    # calculate reward
+                    predicted = torch.max(log_probas, 1)[1]
+                    R = (predicted.detach() == y.long()).float()
+                    R = R.unsqueeze(1).repeat(1, self.num_glimpses)
+
+                    # compute losses for differentiable modules
+                    loss_action = F.nll_loss(log_probas, y)
+                    loss_baseline = F.mse_loss(baselines, R)
+
+                    # compute reinforce loss
+                    # summed over timesteps and averaged across batch
+                    adjusted_reward = R - baselines.detach()
+                    loss_reinforce = torch.sum(-log_pi*adjusted_reward, dim=1)
+                    loss_reinforce = torch.mean(loss_reinforce, dim=0)
+
+                    # sum up into a hybrid loss
+                    if loss is None:
+                        loss = loss_action + loss_baseline + loss_reinforce
+                    else:
+                        loss = loss + loss_action + loss_baseline + loss_reinforce
+
+                    # compute accuracy
+                    correct = (predicted == y).float()
+                    acc = 100 * (correct.sum() / len(y))
 
                     # store
-                    locs.append(l_t[0:9])
-                    baselines.append(b_t)
-                    log_pi.append(p)
-
-                # last iteration
-                h_t, l_t, b_t, log_probas, p = self.model(
-                    x, l_t, h_t, last=True
-                )
-                log_pi.append(p)
-                baselines.append(b_t)
-                locs.append(l_t[0:9])
-
-                # convert list to tensors and reshape
-                baselines = torch.stack(baselines).transpose(1, 0)
-                log_pi = torch.stack(log_pi).transpose(1, 0)
-
-                # calculate reward
-                predicted = torch.max(log_probas, 1)[1]
-                R = (predicted.detach() == y.long()).float()
-                R = R.unsqueeze(1).repeat(1, self.num_glimpses)
-
-                # compute losses for differentiable modules
-                loss_action = F.nll_loss(log_probas, y)
-                loss_baseline = F.mse_loss(baselines, R)
-
-                # compute reinforce loss
-                # summed over timesteps and averaged across batch
-                adjusted_reward = R - baselines.detach()
-                loss_reinforce = torch.sum(-log_pi*adjusted_reward, dim=1)
-                loss_reinforce = torch.mean(loss_reinforce, dim=0)
-
-                # sum up into a hybrid loss
-                loss = loss_action + loss_baseline + loss_reinforce
-
-                # compute accuracy
-                correct = (predicted == y).float()
-                acc = 100 * (correct.sum() / len(y))
-
-                # store
-                try:
-                    losses.update(loss.data[0], x.size()[0])
-                    accs.update(acc.data[0], x.size()[0])
-                except:
-                    losses.update(loss.data.item(), x.size()[0])
-                    accs.update(acc.data.item(), x.size()[0])
-
+                    try:
+                        losses.update(loss.data[0], x.size()[0])
+                        accs.update(acc.data[0], x.size()[0])
+                    except:
+                        losses.update(loss.data.item(), x.size()[0])
+                        accs.update(acc.data.item(), x.size()[0])
                 # compute gradients and update SGD
                 self.optimizer.zero_grad()
+                loss = loss / M
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5.0)
+
                 self.optimizer.step()
 
                 # measure elapsed time
@@ -331,8 +345,8 @@ class Trainer(object):
                 # log to tensorboard
                 if self.use_tensorboard:
                     iteration = epoch*len(self.train_loader) + i
-                    log_value('train_loss', losses.avg, iteration)
-                    log_value('train_acc', accs.avg, iteration)
+                    # log_value('train_loss', losses.avg, iteration)
+                    # log_value('train_acc', accs.avg, iteration)
 
             return losses.avg, accs.avg
 
@@ -354,6 +368,7 @@ class Trainer(object):
             # initialize location vector and hidden state
             self.batch_size = x.shape[0]
             h_t, l_t = self.reset()
+            h_t = None
 
             # extract the glimpses
             log_pi = []
@@ -425,8 +440,8 @@ class Trainer(object):
             # log to tensorboard
             if self.use_tensorboard:
                 iteration = epoch*len(self.valid_loader) + i
-                log_value('valid_loss', losses.avg, iteration)
-                log_value('valid_acc', accs.avg, iteration)
+                # log_value('valid_loss', losses.avg, iteration)
+                # log_value('valid_acc', accs.avg, iteration)
 
         return losses.avg, accs.avg
 

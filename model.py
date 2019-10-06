@@ -55,7 +55,9 @@ class RecurrentAttention(nn.Module):
         self.std = std
 
         self.sensor = glimpse_network(h_g, h_l, g, k, s, c)
-        self.rnn = core_network(hidden_size, hidden_size)
+        from torch.nn import LSTMCell
+        self.rnn = LSTMCell(h_g, hidden_size)
+        # self.rnn = core_network(hidden_size, hidden_size)
         self.illuminator = illumination_network(hidden_size, 25, std)
         self.classifier = action_network(hidden_size, num_classes)
         self.baseliner = baseline_network(hidden_size, 1)
@@ -78,7 +80,7 @@ class RecurrentAttention(nn.Module):
           If True, the action network returns an output probability
           vector over the classes and the baseline `b_t` for the
           current timestep `t`. Else, the core network returns the
-          hidden state vector for the next timestep `t+1` and the
+          hidden state vector for the next timestep `t+1` and them
           location vector for the next timestep `t+1`.
 
         Returns
@@ -100,17 +102,17 @@ class RecurrentAttention(nn.Module):
         g_t = self.sensor(x, k_t_prev)
         h_t = self.rnn(g_t, h_t_prev)
 
-        mu, k_t = self.illuminator(h_t)
+        mu, k_t, log_pi = self.illuminator(h_t[0])
 
-        b_t = self.baseliner(h_t).squeeze()
+        b_t = self.baseliner(h_t[0]).squeeze()
         # we assume both dimensions are independent
         # 1. pdf of the joint is the product of the pdfs
         # 2. log of the product is the sum of the logs
-        log_pi = Normal(mu, self.std).log_prob(k_t)
-        log_pi = torch.sum(log_pi, dim=1)
+        # log_pi = Normal(mu, self.std).log_prob(k_t)
+        # log_pi = torch.sum(log_pi, dim=1)
 
         if last:
-            log_probas = self.classifier(h_t)
+            log_probas = self.classifier(h_t[0])
             return h_t, k_t, b_t, log_probas, log_pi
 
         return h_t, k_t, b_t, log_pi

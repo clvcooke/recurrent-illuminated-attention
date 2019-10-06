@@ -22,9 +22,9 @@ glimpse_arg.add_argument('--glimpse_scale', type=int, default=2,
                          help='scale of successive patches')
 glimpse_arg.add_argument('--num_patches', type=int, default=1,
                          help='# of downscaled patches per glimpse')
-glimpse_arg.add_argument('--loc_hidden', type=int, default=128,
+glimpse_arg.add_argument('--loc_hidden', type=int, default=256,
                          help='hidden size of loc fc')
-glimpse_arg.add_argument('--glimpse_hidden', type=int, default=128,
+glimpse_arg.add_argument('--glimpse_hidden', type=int, default=256,
                          help='hidden size of glimpse fc')
 
 
