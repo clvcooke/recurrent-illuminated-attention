@@ -48,7 +48,9 @@ class retina(object):
         phi = self.extract_k_stack(x, k)
 
         # post processing as in normalize?
-        return phi.view((phi.shape[0], -1))
+        phi = phi.view((phi.shape[0], -1))
+        phi = (phi - phi.mean()) / phi.std()
+        return phi
 
     def foveate(self, x, l):
         """
@@ -83,7 +85,12 @@ class retina(object):
     @staticmethod
     def sample_k_space(k_stack, led_configuration):
         # TODO: there is probably a better/more efficient way to do this...
-        k_space_sample = torch.sum(k_stack * led_configuration.flatten(), axis=-1)
+        good_axis = np.array([1,2,3,5,9,10,14,15,18,21,22,23])
+        leds = np.zeros((25))
+        # leds[good_axis] = led_configuration.flatten()
+        for ga, lc in zip(good_axis, led_configuration.flatten()):
+            leds[ga] = lc
+        k_space_sample = torch.sum(k_stack * torch.from_numpy(leds).float(), axis=-1)
         return k_space_sample
 
     def extract_k_stack(self, x, k):
@@ -246,11 +253,12 @@ class glimpse_network(nn.Module):
         self.fc1 = nn.Linear(D_in, h_g)
 
         # location layer
-        D_in = 25
+        # D_in = 25
+        D_in = 12
         self.fc2 = nn.Linear(D_in, h_l)
 
-        self.fc3 = nn.Linear(h_g, h_g)
-        self.fc4 = nn.Linear(h_l, h_g)
+        self.fc3 = nn.Linear(h_g, h_g+h_l)
+        self.fc4 = nn.Linear(h_l, h_g+h_l)
 
     def forward(self, x, k_t_prev):
         # generate k-sample phi from image x
@@ -361,19 +369,19 @@ class illumination_network(nn.Module):
     def forward(self, h_t):
         # compute mean
         mu = self.fc(h_t.detach())
-        mu = torch.clamp(mu, -1, 1)
+        # mu = torch.clamp(mu, -1, 1)
         # reparametrization trick
         noise = torch.zeros_like(mu)
         noise.data.normal_(std=self.std)
         k_t = mu + noise
         # bound between [-1, 1]
-        k_t = torch.clamp(k_t, -1, 1)
+        # k_t = torch.clamp(k_t, -1, 1)
         from torch.distributions import Normal
 
         log_pi = Normal(mu, self.std).log_prob(k_t)
         log_pi = torch.sum(log_pi, dim=1)
 
-        # k_t = torch.tanh(k_t)
+        k_t = torch.tanh(k_t)
 
         return mu, k_t, log_pi
 

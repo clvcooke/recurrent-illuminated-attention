@@ -115,3 +115,11 @@ ENV/
 data/MNIST/processed/
 
 data/MNIST/raw/
+
+*.yaml
+
+wandb/run-20191006_142141-2vd107wf/
+
+wandb/run-20191006_142317-kwjfgdj8/
+
+wandb/
