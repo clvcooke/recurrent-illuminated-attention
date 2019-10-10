@@ -17,11 +17,6 @@ from model import RecurrentAttention
 import wandb
 wandb.init("RVA")
 
-LOSS_BALANCE = {
-    'loss_timeout': 1.0,
-    'loss_correct': 0.01,
-    'loss_incorrect': 1.0
-}
 
 class Trainer(object):
     """
@@ -74,6 +69,7 @@ class Trainer(object):
         self.start_epoch = 0
         self.momentum = config.momentum
         self.lr = config.init_lr
+        self.loss_balance = config.loss_balance
 
         # misc params
         self.use_gpu = config.use_gpu
@@ -125,7 +121,7 @@ class Trainer(object):
         #     self.optimizer, 'min', patience=self.lr_patience
         # )
         self.optimizer = optim.Adam(
-            self.model.parameters(), lr=3e-5,
+            self.model.parameters(), lr=1e-4,
         )
 
         wandb.watch(self.model, log="all")
@@ -352,13 +348,13 @@ class Trainer(object):
         for batch_ind in range(batch_size):
             if timeouts[batch_ind]:
                 decision_target.append(1)
-                decision_scaling.append(LOSS_BALANCE['loss_timeout'])
+                decision_scaling.append(1.0)
             elif R[batch_ind][0] == 1:
                 decision_target.append(1)
-                decision_scaling.append(LOSS_BALANCE['loss_correct'])
+                decision_scaling.append(self.config.loss_balance)
             elif R[batch_ind][0] == 0:
                 decision_target.append(0)
-                decision_scaling.append(LOSS_BALANCE['loss_incorrect'])
+                decision_scaling.append(1.0)
             else:
                 raise RuntimeError("how did we get here?")
         decision_target = torch.tensor(decision_target)
