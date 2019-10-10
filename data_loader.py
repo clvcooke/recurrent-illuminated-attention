@@ -56,36 +56,39 @@ def get_train_valid_loader(data_dir,
     error_msg = "[!] valid_size should be in the range [0, 1]."
     assert ((valid_size >= 0) and (valid_size <= 1)), error_msg
 
-    datapath_train_images = r"C:\Users\clvco\Documents\Code\K-space_rl-data\Fashion\fashion_train_norm.npy"
-    datapath_train_labels = r"C:\Users\clvco\Documents\Code\K-space_rl-data\Fashion\fashion_train_labels.npy"
-
-    datapath_test_images = r"C:\Users\clvco\Documents\Code\K-space_rl-data\Fashion\fashion_test_norm.npy"
-    datapath_test_labels = r"C:\Users\clvco\Documents\Code\K-space_rl-data\Fashion\fashion_test_labels.npy"
-
-    data_x = torch.from_numpy(np.load(datapath_train_images)).reshape((-1, 28, 28, 25)).float()
-    data_x_test = torch.from_numpy(np.load(datapath_test_images)).reshape((-1, 28, 28, 25)).float() / 255
-    data_y = torch.from_numpy(np.load(datapath_train_labels))
-    data_y_test = torch.from_numpy(np.load(datapath_test_labels))
+    # datapath_train_images = r"C:\Users\clvco\Documents\Code\K-space_rl-data\Fashion\fashion_train_norm.npy"
+    # datapath_train_labels = r"C:\Users\clvco\Documents\Code\K-space_rl-data\Fashion\fashion_train_labels.npy"
 
 
+    datapath_train_images = r"C:\Users\clvco\Documents\Code\K-space_rl-data\malaria_norm.npy"
+    datapath_train_labels = r"C:\Users\clvco\Documents\Code\K-space_rl-data\malaria_labels.npy"
+
+    # datapath_test_images = r"C:\Users\clvco\Documents\Code\K-space_rl-data\Fashion\fashion_test_norm.npy"
+    # datapath_test_labels = r"C:\Users\clvco\Documents\Code\K-space_rl-data\Fashion\fashion_test_labels.npy"
+
+    data_x = torch.from_numpy(np.load(datapath_train_images)).reshape((-1, 28, 28, 96)).float()
+    # data_x_test = torch.from_numpy(np.load(datapath_test_images)).reshape((-1, 28, 28, 25)).float() / 255
+    data_y = torch.from_numpy(np.load(datapath_train_labels)).long()
+    # data_y_test = torch.from_numpy(np.load(datapath_test_labels))
 
 
     num_train = data_x.shape[0]
-    num_test = data_x_test.shape[0]
+    # num_test = data_x_test.shape[0]
     indices = list(range(num_train))
-    indices_test = list(range(num_test))
+    # indices_test = list(range(num_test))
 
     if shuffle:
-        np.random.seed(random_seed)
+        np.random.seed(3)
         np.random.shuffle(indices)
+        # np.random.seed(12)
 
-    train_idx, valid_idx = indices, indices_test
+    train_idx, valid_idx = indices[:800], indices[800:]
 
     train_sampler = SubsetRandomSampler(train_idx)
     valid_sampler = SubsetRandomSampler(valid_idx)
 
     dataset = CustomDataset(data_x, data_y)
-    test_dataset = CustomDataset(data_x_test, data_y_test)
+    test_dataset = CustomDataset(data_x, data_y)
 
     train_loader = torch.utils.data.DataLoader(
         dataset, batch_size=batch_size, sampler=train_sampler,

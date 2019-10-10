@@ -14,6 +14,8 @@ from tqdm import tqdm
 from utils import AverageMeter
 from model import RecurrentAttention
 
+import wandb
+wandb.init("RVA")
 
 class Trainer(object):
     """
@@ -58,7 +60,7 @@ class Trainer(object):
         else:
             self.test_loader = data_loader
             self.num_test = len(self.test_loader.dataset)
-        self.num_classes = 10
+        self.num_classes = 2
         self.num_channels = 1
 
         # training params
@@ -117,8 +119,10 @@ class Trainer(object):
         #     self.optimizer, 'min', patience=self.lr_patience
         # )
         self.optimizer = optim.Adam(
-            self.model.parameters(), lr=1e-3,
+            self.model.parameters(), lr=3e-5,
         )
+
+        wandb.watch(self.model, log="all")
 
     def reset(self):
         """
@@ -135,8 +139,7 @@ class Trainer(object):
         h_t = torch.zeros(self.batch_size, self.hidden_size)
         h_t = Variable(h_t).type(dtype)
 
-        l_t = torch.Tensor(self.batch_size, 25).uniform_(-1, 1)
-        l_t = Variable(l_t).type(dtype)
+        l_t = None
 
         return h_t, l_t
 
@@ -157,18 +160,18 @@ class Trainer(object):
         )
 
         for epoch in range(self.start_epoch, self.epochs):
-
+            self.curr_epoch = epoch
             print(
                 '\nEpoch: {}/{} - LR: {:.6f}'.format(
                     epoch+1, self.epochs, self.lr)
             )
 
+
+
             # train for 1 epoch
             train_loss, train_acc = self.train_one_epoch(epoch)
-
             # evaluate on validation set
             valid_loss, valid_acc = self.validate(epoch)
-
             # # reduce lr if validation loss plateaus
             # self.scheduler.step(valid_loss)
 
@@ -180,6 +183,10 @@ class Trainer(object):
                 msg2 += " [*]"
             msg = msg1 + msg2
             print(msg.format(train_loss, train_acc, valid_loss, valid_acc))
+            wandb.log({
+                "test_accuracy": valid_acc,
+                "train_accuracy": train_acc
+            })
 
             # check for improvement
             if not is_best:
@@ -198,8 +205,8 @@ class Trainer(object):
             # decay
             # for param_group in self.optimizer.param_groups:
             #     old_lr = param_group['lr']
-            #     param_group['lr'] = param_group['lr']*0.97
-            # print(f"Reducing LR from {old_lr} to {old_lr*0.97}")
+            #     param_group['lr'] = param_group['lr']*0.98
+            # print(f"Reducing LR from {old_lr} to {old_lr*0.98}")
 
     def train_one_epoch(self, epoch):
         """
@@ -217,86 +224,70 @@ class Trainer(object):
         tic = time.time()
         with tqdm(total=self.num_train) as pbar:
             for i, (x, y) in enumerate(self.train_loader):
-                M = 4
-                loss = None
-                for m in range(M):
-                    if self.use_gpu:
-                        x, y = x.cuda(), y.cuda()
-                    x, y = Variable(x), Variable(y)
+                if self.use_gpu:
+                    x, y = x.cuda(), y.cuda()
+                x, y = Variable(x), Variable(y)
 
-                    plot = False
-                    if (epoch % self.plot_freq == 0) and (i == 0):
-                        plot = True
-
-                    # initialize location vector and hidden state
-                    self.batch_size = x.shape[0]
-                    h_t, l_t = self.reset()
-                    h_t = None
-
-                    # save images
-                    imgs = []
-                    imgs.append(x[0:9])
-
-                    # extract the glimpses
-                    locs = []
-                    log_pi = []
-                    baselines = []
-                    for t in range(self.num_glimpses - 1):
-                        # forward pass through model
-                        h_t, l_t, b_t, p = self.model(x, l_t, h_t)
-
-                        # store
-                        locs.append(l_t[0:9])
-                        baselines.append(b_t)
-                        log_pi.append(p)
-
-                    # last iteration
-                    h_t, l_t, b_t, log_probas, p = self.model(
-                        x, l_t, h_t, last=True
-                    )
-                    log_pi.append(p)
-                    baselines.append(b_t)
-                    locs.append(l_t[0:9])
-
-                    # convert list to tensors and reshape
-                    baselines = torch.stack(baselines).transpose(1, 0)
-                    log_pi = torch.stack(log_pi).transpose(1, 0)
-
-                    # calculate reward
-                    predicted = torch.max(log_probas, 1)[1]
-                    R = (predicted.detach() == y.long()).float()
-                    R = R.unsqueeze(1).repeat(1, self.num_glimpses)
-
-                    # compute losses for differentiable modules
-                    loss_action = F.nll_loss(log_probas, y)
-                    loss_baseline = F.mse_loss(baselines, R)
-
-                    # compute reinforce loss
-                    # summed over timesteps and averaged across batch
-                    adjusted_reward = R - baselines.detach()
-                    loss_reinforce = torch.sum(-log_pi*adjusted_reward, dim=1)
-                    loss_reinforce = torch.mean(loss_reinforce, dim=0)
-
-                    # sum up into a hybrid loss
-                    if loss is None:
-                        loss = loss_action + loss_baseline + loss_reinforce
+                import numpy as np
+                for b in range(x.shape[0]):
+                    random_rotation = np.random.randint(0, 4)
+                    if random_rotation == 0:
+                        pass
+                    elif random_rotation == 1:
+                        x[b] = x[b].transpose(0, 1)
+                    elif random_rotation == 2:
+                        x[b] = x[b].flip(1)
                     else:
-                        loss = loss + loss_action + loss_baseline + loss_reinforce
+                        x[b] = x[b].transpose(0, 1).flip(1)
 
-                    # compute accuracy
-                    correct = (predicted == y).float()
-                    acc = 100 * (correct.sum() / len(y))
 
-                    # store
-                    try:
-                        losses.update(loss.data[0], x.size()[0])
-                        accs.update(acc.data[0], x.size()[0])
-                    except:
-                        losses.update(loss.data.item(), x.size()[0])
-                        accs.update(acc.data.item(), x.size()[0])
+                plot = False
+                if (epoch % self.plot_freq == 0) and (i == 0):
+                    plot = True
+
+                # initialize location vector and hidden state
+                self.batch_size = x.shape[0]
+                h_t, l_t = self.reset()
+                h_t = None
+
+                # extract the glimpses
+                locs = []
+                for t in range(self.num_glimpses - 1):
+                    # forward pass through model
+                    h_t, l_t = self.model(x, l_t, h_t)
+
+                # last iteration
+                h_t, l_t,log_probas = self.model(
+                    x, l_t, h_t, last=True
+                )
+
+
+                # calculate reward
+                predicted = torch.max(log_probas, 1)[1]
+                R = (predicted.detach() == y.long()).float()
+                R = R.unsqueeze(1).repeat(1, self.num_glimpses)
+
+                # compute losses for differentiable modules
+                loss_action = F.nll_loss(log_probas, y)
+
+
+                # sum up into a hybrid loss
+                loss = loss_action
+
+                # compute accuracy
+                correct = (predicted == y).float()
+                acc = 100 * (correct.sum() / len(y))
+
+                # store
+                try:
+                    losses.update(loss.data[0], x.size()[0])
+                    accs.update(acc.data[0], x.size()[0])
+                except:
+                    losses.update(loss.data.item(), x.size()[0])
+                    accs.update(acc.data.item(), x.size()[0])
                 # compute gradients and update SGD
                 self.optimizer.zero_grad()
-                loss = loss / M
+                loss = loss
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5.0)
 
@@ -321,33 +312,6 @@ class Trainer(object):
                 )
                 pbar.update(self.batch_size)
 
-                # dump the glimpses and locs
-                if plot:
-                    if self.use_gpu:
-                        imgs = [g.cpu().data.numpy().squeeze() for g in imgs]
-                        locs = [l.cpu().data.numpy() for l in locs]
-                    else:
-                        imgs = [g.data.numpy().squeeze() for g in imgs]
-                        locs = [l.data.numpy() for l in locs]
-                    pickle.dump(
-                        imgs, open(
-                            self.plot_dir + "g_{}.p".format(epoch+1),
-                            "wb"
-                        )
-                    )
-                    pickle.dump(
-                        locs, open(
-                            self.plot_dir + "l_{}.p".format(epoch+1),
-                            "wb"
-                        )
-                    )
-
-                # log to tensorboard
-                if self.use_tensorboard:
-                    iteration = epoch*len(self.train_loader) + i
-                    # log_value('train_loss', losses.avg, iteration)
-                    # log_value('train_acc', accs.avg, iteration)
-
             return losses.avg, accs.avg
 
     def validate(self, epoch):
@@ -361,69 +325,49 @@ class Trainer(object):
             if self.use_gpu:
                 x, y = x.cuda(), y.cuda()
             x, y = Variable(x), Variable(y)
-
+            # noise = torch.rand(x.size())*0.2
+            # noise = Variable(x.data.new(x.size()).normal_(0, 0.2))
+            # x = x + noise
             # duplicate 10 times
-            x = x.repeat(self.M, 1, 1, 1)
+            # x = x.repeat(self.M, 1, 1, 1)
 
             # initialize location vector and hidden state
             self.batch_size = x.shape[0]
             h_t, l_t = self.reset()
             h_t = None
 
+
             # extract the glimpses
-            log_pi = []
-            baselines = []
             for t in range(self.num_glimpses - 1):
                 # forward pass through model
-                h_t, l_t, b_t, p = self.model(x, l_t, h_t)
-
-                # store
-                baselines.append(b_t)
-                log_pi.append(p)
+                h_t, l_t = self.model(x, l_t, h_t)
+                if i == 0:
+                    wandb.log({"k_t": [
+                        wandb.Image(l_t.detach().numpy()[0, :].reshape(4, 8, 3),
+                                    caption=f'glimpse {t + 1}')]},
+                              step=self.curr_epoch)
 
             # last iteration
-            h_t, l_t, b_t, log_probas, p = self.model(
+            h_t, l_t, log_probas = self.model(
                 x, l_t, h_t, last=True
             )
-            log_pi.append(p)
-            baselines.append(b_t)
-
-            # convert list to tensors and reshape
-            baselines = torch.stack(baselines).transpose(1, 0)
-            log_pi = torch.stack(log_pi).transpose(1, 0)
+            if i == 0:
+                wandb.log({"k_t": [wandb.Image(l_t.detach().numpy()[0,:].reshape(4, 8, 3), caption=f'glimpse {t + 1}')]} , step=self.curr_epoch)
 
             # average
             log_probas = log_probas.view(
-                self.M, -1, log_probas.shape[-1]
+                -1, log_probas.shape[-1]
             )
-            log_probas = torch.mean(log_probas, dim=0)
+            # log_probas = torch.mean(log_probas, dim=0)
 
-            baselines = baselines.contiguous().view(
-                self.M, -1, baselines.shape[-1]
-            )
-            baselines = torch.mean(baselines, dim=0)
-
-            log_pi = log_pi.contiguous().view(
-                self.M, -1, log_pi.shape[-1]
-            )
-            log_pi = torch.mean(log_pi, dim=0)
-
-            # calculate reward
             predicted = torch.max(log_probas, 1)[1]
-            R = (predicted.detach() == y).float()
-            R = R.unsqueeze(1).repeat(1, self.num_glimpses)
 
             # compute losses for differentiable modules
             loss_action = F.nll_loss(log_probas, y)
-            loss_baseline = F.mse_loss(baselines, R)
 
-            # compute reinforce loss
-            adjusted_reward = R - baselines.detach()
-            loss_reinforce = torch.sum(-log_pi*adjusted_reward, dim=1)
-            loss_reinforce = torch.mean(loss_reinforce, dim=0)
 
             # sum up into a hybrid loss
-            loss = loss_action + loss_baseline + loss_reinforce
+            loss = loss_action
 
             # compute accuracy
             correct = (predicted == y).float()
@@ -436,12 +380,6 @@ class Trainer(object):
             except:
                 losses.update(loss.data.item(), x.size()[0])
                 accs.update(acc.data.item(), x.size()[0])
-
-            # log to tensorboard
-            if self.use_tensorboard:
-                iteration = epoch*len(self.valid_loader) + i
-                # log_value('valid_loss', losses.avg, iteration)
-                # log_value('valid_acc', accs.avg, iteration)
 
         return losses.avg, accs.avg
 
@@ -462,24 +400,25 @@ class Trainer(object):
             x, y = Variable(x, volatile=True), Variable(y)
 
             # duplicate 10 times
-            x = x.repeat(self.M, 1, 1, 1)
+            # x = x.repeat(self.M, 1, 1, 1)
 
             # initialize location vector and hidden state
             self.batch_size = x.shape[0]
             h_t, l_t = self.reset()
+            h_t = None
 
             # extract the glimpses
             for t in range(self.num_glimpses - 1):
                 # forward pass through model
-                h_t, l_t, b_t, p = self.model(x, l_t, h_t)
+                h_t, l_t, b_t, p = self.model(x, l_t, h_t, valid=True)
 
             # last iteration
             h_t, l_t, b_t, log_probas, p = self.model(
-                x, l_t, h_t, last=True
+                x, l_t, h_t, last=True, valid=True
             )
 
             log_probas = log_probas.view(
-                self.M, -1, log_probas.shape[-1]
+                -1, log_probas.shape[-1]
             )
             log_probas = torch.mean(log_probas, dim=0)
 

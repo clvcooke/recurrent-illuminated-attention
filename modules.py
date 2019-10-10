@@ -7,6 +7,20 @@ from torch.autograd import Variable
 import numpy as np
 
 
+class AddBias(nn.Module):
+    def __init__(self, bias, trainable=True):
+        super(AddBias, self).__init__()
+        self._bias = nn.Parameter(bias.unsqueeze(1),
+                                  requires_grad=trainable)
+
+    def forward(self, x):
+        if x.dim() == 2:
+            bias = self._bias.t().view(1, -1)
+        else:
+            bias = self._bias.t().view(1, -1, 1, 1)
+
+        return x + bias
+
 class retina(object):
     """
     A retina that extracts a foveated glimpse `phi`
@@ -32,10 +46,12 @@ class retina(object):
     - phi: a 5D tensor of shape (B, k, g, g, C). The
       foveated glimpse of the image.
     """
+
     def __init__(self, g, k, s):
         self.g = g
         self.k = k
         self.s = s
+
 
     def illuminate(self, x, k):
         """
@@ -44,12 +60,10 @@ class retina(object):
         The `k` patches are finally resized to (g, g) and
         concatenated into a tensor of shape (B, k, g, g, C).
         """
-        # get the k_space samples
         phi = self.extract_k_stack(x, k)
 
         # post processing as in normalize?
-        phi = phi.view((phi.shape[0], -1))
-        phi = (phi - phi.mean()) / phi.std()
+        # phi = (phi - phi.mean()) / phi.std()
         return phi
 
     def foveate(self, x, l):
@@ -85,12 +99,7 @@ class retina(object):
     @staticmethod
     def sample_k_space(k_stack, led_configuration):
         # TODO: there is probably a better/more efficient way to do this...
-        good_axis = np.array([1,2,3,5,9,10,14,15,18,21,22,23])
-        leds = np.zeros((25))
-        # leds[good_axis] = led_configuration.flatten()
-        for ga, lc in zip(good_axis, led_configuration.flatten()):
-            leds[ga] = lc
-        k_space_sample = torch.sum(k_stack * torch.from_numpy(leds).float(), axis=-1)
+        k_space_sample = torch.sum(k_stack * led_configuration.flatten(), axis=-1)
         return k_space_sample
 
     def extract_k_stack(self, x, k):
@@ -247,37 +256,56 @@ class glimpse_network(nn.Module):
     def __init__(self, h_g, h_l, g, k, s, c):
         super(glimpse_network, self).__init__()
         self.retina = retina(g, k, s)
-
+        self.conv_layer = torch.nn.Conv2d(96, 1, kernel_size=1, stride=1, bias=True)
         # glimpse layer
         D_in = 28*28
-        self.fc1 = nn.Linear(D_in, h_g)
 
-        # location layer
-        # D_in = 25
-        D_in = 12
-        self.fc2 = nn.Linear(D_in, h_l)
+        self.alexnet = torch.nn.Sequential(
+            torch.nn.Conv2d(1, 4, kernel_size=3, stride=1),
+            torch.nn.ReLU(),
+            torch.nn.Conv2d(4, 4, kernel_size=3, stride=1),
+            torch.nn.ReLU(),
+            torch.nn.Conv2d(4, 8, kernel_size=3, stride=1),
+            torch.nn.ReLU(),
+            torch.nn.Conv2d(8, 16, kernel_size=3, stride=1),
+            torch.nn.ReLU(),
+            torch.nn.Conv2d(16, 16, kernel_size=3, stride=1),
+            torch.nn.ReLU(),
+            torch.nn.MaxPool2d(kernel_size=2),
+            torch.nn.Conv2d(16, 32, kernel_size=3),
+            torch.nn.ReLU(),
+            torch.nn.Conv2d(32, 32, kernel_size=3),
+            torch.nn.ReLU(),
+            torch.nn.MaxPool2d(kernel_size=2)
+        )
 
-        self.fc3 = nn.Linear(h_g, h_g+h_l)
-        self.fc4 = nn.Linear(h_l, h_g+h_l)
+        self.linear_layers = torch.nn.Sequential(
+            torch.nn.Linear(784, 128),
+            torch.nn.ReLU(),
+            torch.nn.Linear(128, 256)
+            # torch.nn.ReLU()
+        )
+
+        self.where = torch.nn.Sequential(
+            torch.nn.Linear(96, 128),
+            torch.nn.ReLU(),
+            torch.nn.Linear(128, 256)
+            # torch.nn.ReLU()
+        )
 
     def forward(self, x, k_t_prev):
         # generate k-sample phi from image x
-        phi = self.retina.illuminate(x, k_t_prev)
+        if k_t_prev is None:
+            phi = self.conv_layer(x.permute(0,3,1,2))
+            k_t_prev = self.conv_layer.weight.view(-1, 96).repeat([phi.shape[0], 1])
+        else:
+            phi = self.retina.illuminate(x,k_t_prev).view((-1, 1, 28, 28))
 
-        # flatten illumination vector
-        k_t_prev = k_t_prev.view(k_t_prev.size(0), -1)
-
-        # feed phi and k into respective fc layers
-        phi_out = torch.relu(self.fc1(phi))
-        k_out = torch.relu(self.fc2(k_t_prev))
-
-        what = self.fc3(phi_out)
-        where = self.fc4(k_out)
-
-        # feed to fc layer
-        g_t = torch.relu(what + where) # why?
-        return g_t
-
+        # res = self.alexnet(phi).view((phi.shape[0], -1))
+        res_phi = self.linear_layers(phi.view((phi.shape[0], -1)))
+        res_k = self.where(k_t_prev)
+        res = F.relu(res_k + res_phi)
+        return res
 
 class core_network(nn.Module):
     """
@@ -353,9 +381,11 @@ class action_network(nn.Module):
     def __init__(self, input_size, output_size):
         super(action_network, self).__init__()
         self.fc = nn.Linear(input_size, output_size)
+        # self.fc2  = nn.Linear(64, 64)
+        # self.fc3 = nn.Linear(64, output_size)
 
     def forward(self, h_t):
-        a_t = F.log_softmax(self.fc(h_t), dim=1)
+        a_t = F.log_softmax((self.fc(h_t)), dim=1)
         return a_t
 
 
@@ -366,24 +396,28 @@ class illumination_network(nn.Module):
         self.std = std
         self.fc = nn.Linear(input_size, output_size)
 
-    def forward(self, h_t):
+    def forward(self, h_t, valid=False):
         # compute mean
-        mu = self.fc(h_t.detach())
+        mu = self.fc(h_t)
+
+        # mu = self.fc(h_t)
         # mu = torch.clamp(mu, -1, 1)
         # reparametrization trick
-        noise = torch.zeros_like(mu)
-        noise.data.normal_(std=self.std)
-        k_t = mu + noise
-        # bound between [-1, 1]
+        if not valid and False:
+            noise = torch.zeros_like(mu)
+            noise.data.normal_(std=self.std)
+            k_t = mu + noise
+        else:
+            k_t = mu
+        # # bound between [-1, 1]
         # k_t = torch.clamp(k_t, -1, 1)
-        from torch.distributions import Normal
-
-        log_pi = Normal(mu, self.std).log_prob(k_t)
-        log_pi = torch.sum(log_pi, dim=1)
-
+        # from torch.distributions import Normal
+        #
+        # log_pi = Normal(mu, self.std).log_prob(k_t)
+        # log_pi = torch.sum(log_pi, dim=1)
         k_t = torch.tanh(k_t)
 
-        return mu, k_t, log_pi
+        return k_t
 
 class location_network(nn.Module):
     """

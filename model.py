@@ -56,13 +56,20 @@ class RecurrentAttention(nn.Module):
 
         self.sensor = glimpse_network(h_g, h_l, g, k, s, c)
         from torch.nn import LSTMCell
-        self.rnn = LSTMCell(h_g, hidden_size)
+        # self.fake_rnn = torch.nn.Sequential(
+        #     torch.nn.Linear(128, 128),
+        #     torch.nn.ReLU(),
+        #     torch.nn.Linear(128, hidden_size),
+        #     torch.nn.ReLU(),
+        # )
+        self.rnn = LSTMCell(256, hidden_size)
+        # self.rnn_2 = LSTMCell(hidden_size, hidden_size)
         # self.rnn = core_network(hidden_size, hidden_size)
-        self.illuminator = illumination_network(hidden_size, 25, std)
-        self.classifier = action_network(hidden_size, num_classes)
+        self.illuminator = illumination_network(hidden_size, 96, std)
+        self.classifier = action_network(hidden_size, 2)
         self.baseliner = baseline_network(hidden_size, 1)
 
-    def forward(self, x, k_t_prev, h_t_prev, last=False):
+    def forward(self, x, k_t_prev, h_t_prev, last=False, valid=False):
         """
         Run the recurrent attention model for 1 timestep
         on the minibatch of images `x`.
@@ -101,10 +108,14 @@ class RecurrentAttention(nn.Module):
         # sample k-space
         g_t = self.sensor(x, k_t_prev)
         h_t = self.rnn(g_t, h_t_prev)
+        # h_t = self.rnn(g_t, h_t_prev)
+        # if h_t_prev is None:
+        #     self.h_t2_prev = None
+        # h_t = self.rnn_2(h_t[0], self.h_t2_prev)
+        # self.h_t2_prev = h_t
 
-        mu, k_t, log_pi = self.illuminator(h_t[0])
+        mu = self.illuminator(h_t[0], valid)
 
-        b_t = self.baseliner(h_t[0]).squeeze()
         # we assume both dimensions are independent
         # 1. pdf of the joint is the product of the pdfs
         # 2. log of the product is the sum of the logs
@@ -113,6 +124,6 @@ class RecurrentAttention(nn.Module):
 
         if last:
             log_probas = self.classifier(h_t[0])
-            return h_t, k_t, b_t, log_probas, log_pi
+            return h_t, mu, log_probas
 
-        return h_t, k_t, b_t, log_pi
+        return h_t, mu

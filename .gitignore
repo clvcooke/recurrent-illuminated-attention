@@ -123,3 +123,5 @@ wandb/run-20191006_142141-2vd107wf/
 wandb/run-20191006_142317-kwjfgdj8/
 
 wandb/
+
+tests/test_modules.py
