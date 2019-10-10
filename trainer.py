@@ -17,6 +17,12 @@ from model import RecurrentAttention
 import wandb
 wandb.init("RVA")
 
+LOSS_BALANCE = {
+    'loss_timeout': 1.0,
+    'loss_correct': 0.01,
+    'loss_incorrect': 1.0
+}
+
 class Trainer(object):
     """
     Trainer encapsulates all the logic necessary for
@@ -124,7 +130,7 @@ class Trainer(object):
 
         wandb.watch(self.model, log="all")
 
-    def reset(self):
+    def reset(self, batch_size):
         """
         Initialize the hidden state of the core network
         and the location vector.
@@ -136,7 +142,7 @@ class Trainer(object):
             torch.cuda.FloatTensor if self.use_gpu else torch.FloatTensor
         )
 
-        h_t = torch.zeros(self.batch_size, self.hidden_size)
+        h_t = torch.zeros(batch_size, self.hidden_size)
         h_t = Variable(h_t).type(dtype)
 
         l_t = None
@@ -169,23 +175,25 @@ class Trainer(object):
 
 
             # train for 1 epoch
-            train_loss, train_acc = self.train_one_epoch(epoch)
+            train_loss, train_acc, glimpses = self.train_one_epoch(epoch)
             # evaluate on validation set
-            valid_loss, valid_acc = self.validate(epoch)
+            valid_loss, valid_acc, val_glimpses = self.validate(epoch)
             # # reduce lr if validation loss plateaus
             # self.scheduler.step(valid_loss)
 
             is_best = valid_acc > self.best_valid_acc
-            msg1 = "train loss: {:.3f} - train acc: {:.3f} "
-            msg2 = "- val loss: {:.3f} - val acc: {:.3f}"
+            msg1 = "train loss: {:.3f} - train acc: {:.3f} - train glm {:.3f}"
+            msg2 = "- val loss: {:.3f} - val acc: {:.3f} - val glm {:.3f}"
             if is_best:
                 self.counter = 0
                 msg2 += " [*]"
             msg = msg1 + msg2
-            print(msg.format(train_loss, train_acc, valid_loss, valid_acc))
+            print(msg.format(train_loss, train_acc, glimpses, valid_loss, valid_acc, val_glimpses))
             wandb.log({
                 "test_accuracy": valid_acc,
-                "train_accuracy": train_acc
+                "train_accuracy": train_acc,
+                'train_glimpses': glimpses,
+                'val_glimpses': val_glimpses
             })
 
             # check for improvement
@@ -220,6 +228,7 @@ class Trainer(object):
         batch_time = AverageMeter()
         losses = AverageMeter()
         accs = AverageMeter()
+        glimpses = AverageMeter()
 
         tic = time.time()
         with tqdm(total=self.num_train) as pbar:
@@ -244,40 +253,8 @@ class Trainer(object):
                 plot = False
                 if (epoch % self.plot_freq == 0) and (i == 0):
                     plot = True
-
-                # initialize location vector and hidden state
-                self.batch_size = x.shape[0]
-                h_t, l_t = self.reset()
-                h_t = None
-
-                # extract the glimpses
-                locs = []
-                for t in range(self.num_glimpses - 1):
-                    # forward pass through model
-                    h_t, l_t = self.model(x, l_t, h_t)
-
-                # last iteration
-                h_t, l_t,log_probas = self.model(
-                    x, l_t, h_t, last=True
-                )
-
-
-                # calculate reward
-                predicted = torch.max(log_probas, 1)[1]
-                R = (predicted.detach() == y.long()).float()
-                R = R.unsqueeze(1).repeat(1, self.num_glimpses)
-
-                # compute losses for differentiable modules
-                loss_action = F.nll_loss(log_probas, y)
-
-
-                # sum up into a hybrid loss
-                loss = loss_action
-
-                # compute accuracy
-                correct = (predicted == y).float()
-                acc = 100 * (correct.sum() / len(y))
-
+                loss, glm, acc = self.rollout(x, y)
+                glimpses.update(glm)
                 # store
                 try:
                     losses.update(loss.data[0], x.size()[0])
@@ -310,9 +287,92 @@ class Trainer(object):
                         )
                     )
                 )
-                pbar.update(self.batch_size)
+                batch_size = x.shape[0]
+                pbar.update(batch_size)
 
-            return losses.avg, accs.avg
+            return losses.avg, accs.avg, glimpses.avg
+
+    def rollout(self, x, y):
+        batch_size = x.shape[0]
+        h_t, l_t = self.reset(batch_size)
+        h_t = None
+
+        # extract the glimpses
+        total_glimpses = 0
+        # we want to run this loop UNTIL they are all done,
+        # that will involve some "dummy" forward passes
+        # need to track when each element of the batch is actually
+        # done to do proper masking
+
+        # use None so everything errors out if I don't explicitly set it
+        prob_as = [None for _ in range(batch_size)]
+        log_ds = [None for _ in range(batch_size)]
+        done_indices = [-1 for _ in range(batch_size)]
+        timeouts = [False for _ in range(batch_size)]
+        glimpse_totals = [None for _ in range(batch_size)]
+        for t in range(self.num_glimpses):
+            total_glimpses += 1
+            # forward pass through model
+            h_t, l_t, prob_a, d_t, log_probds = self.model(x, l_t, h_t)
+            for batch_ind in range(batch_size):
+                if done_indices[batch_ind] > -1:
+                    # already done
+                    continue
+                elif d_t[batch_ind] == 1:
+                    glimpse_totals[batch_ind] = t + 1
+                    # mark as done
+                    done_indices[batch_ind] = t
+                    # save the log_d
+                    log_ds[batch_ind] = log_probds[batch_ind]
+                    # save the prob_a
+                    prob_as[batch_ind] = prob_a[batch_ind]
+                elif t == self.num_glimpses - 1:
+                    # glimpses are timing out
+                    timeouts[batch_ind] = True
+                    glimpse_totals[batch_ind] = t + 1
+                    # mark as done
+                    done_indices[batch_ind] = t
+                    # save the log_d
+                    log_ds[batch_ind] = log_probds[batch_ind]
+                    # save the prob_a
+                    prob_as[batch_ind] = prob_a[batch_ind]
+            if all([done_index > -1 for done_index in done_indices]):
+                break
+        prob_as = torch.stack(prob_as)
+        log_ds = torch.stack(log_ds)
+        # calculate reward
+        predicted = torch.max(prob_as, 1)[1]
+        R = (predicted.detach() == y.long()).float()
+        R = R.unsqueeze(1).repeat(1, self.num_glimpses)
+
+        # compute losses for differentiable modules
+        loss_action = F.nll_loss(prob_as, y)
+        decision_target = []
+        decision_scaling = []
+        for batch_ind in range(batch_size):
+            if timeouts[batch_ind]:
+                decision_target.append(1)
+                decision_scaling.append(LOSS_BALANCE['loss_timeout'])
+            elif R[batch_ind][0] == 1:
+                decision_target.append(1)
+                decision_scaling.append(LOSS_BALANCE['loss_correct'])
+            elif R[batch_ind][0] == 0:
+                decision_target.append(0)
+                decision_scaling.append(LOSS_BALANCE['loss_incorrect'])
+            else:
+                raise RuntimeError("how did we get here?")
+        decision_target = torch.tensor(decision_target)
+        decision_scaling = torch.tensor(decision_scaling)
+        # now take the error between our decision target and log_ds
+        loss_decision = (F.nll_loss(log_ds, decision_target,
+                                    reduction='none') * decision_scaling).mean()
+        # sum up into a hybrid loss
+        loss = loss_action + loss_decision
+        # compute accuracy
+        correct = (predicted == y).float()
+        acc = 100 * (correct.sum() / len(y))
+
+        return loss, sum(glimpse_totals) / batch_size, acc
 
     def validate(self, epoch):
         """
@@ -320,59 +380,15 @@ class Trainer(object):
         """
         losses = AverageMeter()
         accs = AverageMeter()
+        glimpses = AverageMeter()
 
         for i, (x, y) in enumerate(self.valid_loader):
             if self.use_gpu:
                 x, y = x.cuda(), y.cuda()
             x, y = Variable(x), Variable(y)
-            # noise = torch.rand(x.size())*0.2
-            # noise = Variable(x.data.new(x.size()).normal_(0, 0.2))
-            # x = x + noise
-            # duplicate 10 times
-            # x = x.repeat(self.M, 1, 1, 1)
+            loss, glm, acc = self.rollout(x,y)
 
-            # initialize location vector and hidden state
-            self.batch_size = x.shape[0]
-            h_t, l_t = self.reset()
-            h_t = None
-
-
-            # extract the glimpses
-            for t in range(self.num_glimpses - 1):
-                # forward pass through model
-                h_t, l_t = self.model(x, l_t, h_t)
-                if i == 0:
-                    wandb.log({"k_t": [
-                        wandb.Image(l_t.detach().numpy()[0, :].reshape(4, 8, 3),
-                                    caption=f'glimpse {t + 1}')]},
-                              step=self.curr_epoch)
-
-            # last iteration
-            h_t, l_t, log_probas = self.model(
-                x, l_t, h_t, last=True
-            )
-            if i == 0:
-                wandb.log({"k_t": [wandb.Image(l_t.detach().numpy()[0,:].reshape(4, 8, 3), caption=f'glimpse {t + 1}')]} , step=self.curr_epoch)
-
-            # average
-            log_probas = log_probas.view(
-                -1, log_probas.shape[-1]
-            )
-            # log_probas = torch.mean(log_probas, dim=0)
-
-            predicted = torch.max(log_probas, 1)[1]
-
-            # compute losses for differentiable modules
-            loss_action = F.nll_loss(log_probas, y)
-
-
-            # sum up into a hybrid loss
-            loss = loss_action
-
-            # compute accuracy
-            correct = (predicted == y).float()
-            acc = 100 * (correct.sum() / len(y))
-
+            glimpses.update(glm)
             # store
             try:
                 losses.update(loss.data[0], x.size()[0])
@@ -381,7 +397,7 @@ class Trainer(object):
                 losses.update(loss.data.item(), x.size()[0])
                 accs.update(acc.data.item(), x.size()[0])
 
-        return losses.avg, accs.avg
+        return losses.avg, accs.avg, glimpses.avg
 
     def test(self):
         """

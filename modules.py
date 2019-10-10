@@ -307,51 +307,6 @@ class glimpse_network(nn.Module):
         res = F.relu(res_k + res_phi)
         return res
 
-class core_network(nn.Module):
-    """
-    An RNN that maintains an internal state that integrates
-    information extracted from the history of past observations.
-    It encodes the agent's knowledge of the environment through
-    a state vector `h_t` that gets updated at every time step `t`.
-
-    Concretely, it takes the glimpse representation `g_t` as input,
-    and combines it with its internal state `h_t_prev` at the previous
-    time step, to produce the new internal state `h_t` at the current
-    time step.
-
-    In other words:
-
-        `h_t = relu( fc(h_t_prev) + fc(g_t) )`
-
-    Args
-    ----
-    - input_size: input size of the rnn.
-    - hidden_size: hidden size of the rnn.
-    - g_t: a 2D tensor of shape (B, hidden_size). The glimpse
-      representation returned by the glimpse network for the
-      current timestep `t`.
-    - h_t_prev: a 2D tensor of shape (B, hidden_size). The
-      hidden state vector for the previous timestep `t-1`.
-
-    Returns
-    -------
-    - h_t: a 2D tensor of shape (B, hidden_size). The hidden
-      state vector for the current timestep `t`.
-    """
-    def __init__(self, input_size, hidden_size):
-        super(core_network, self).__init__()
-        self.input_size = input_size
-        self.hidden_size = hidden_size
-
-        self.i2h = nn.Linear(input_size, hidden_size)
-        self.h2h = nn.Linear(hidden_size, hidden_size)
-
-    def forward(self, g_t, h_t_prev):
-        h1 = self.i2h(g_t)
-        h2 = self.h2h(h_t_prev)
-        h_t = F.relu(h1 + h2)
-        return h_t
-
 
 class action_network(nn.Module):
     """
@@ -389,34 +344,39 @@ class action_network(nn.Module):
         return a_t
 
 
+class decision_network(nn.Module):
+    def __init__(self, input_size, output_size):
+        super(decision_network, self).__init__()
+        self.fc = nn.Linear(input_size, 2)
+        # self.fc2  = nn.Linear(64, 64)
+        # self.fc3 = nn.Linear(64, output_size)
+
+    def forward(self, h_t):
+        probs = F.softmax((self.fc(h_t)), dim=1)
+        try:
+            sample = torch.distributions.Categorical(probs=probs).sample()
+        except:
+            probs = torch.softmax(probs + 1, dim=1)
+            sample = torch.distributions.Categorical(probs=probs).sample()
+        probs = torch.log(probs)
+        return sample, probs
+
 class illumination_network(nn.Module):
 
     def __init__(self, input_size, output_size, std):
         super(illumination_network, self).__init__()
         self.std = std
         self.fc = nn.Linear(input_size, output_size)
+        self.logstd = AddBias(torch.ones(output_size)*np.log(std), True)
 
     def forward(self, h_t, valid=False):
         # compute mean
         mu = self.fc(h_t)
-
-        # mu = self.fc(h_t)
-        # mu = torch.clamp(mu, -1, 1)
-        # reparametrization trick
-        if not valid and False:
-            noise = torch.zeros_like(mu)
-            noise.data.normal_(std=self.std)
-            k_t = mu + noise
-        else:
-            k_t = mu
-        # # bound between [-1, 1]
-        # k_t = torch.clamp(k_t, -1, 1)
-        # from torch.distributions import Normal
-        #
-        # log_pi = Normal(mu, self.std).log_prob(k_t)
-        # log_pi = torch.sum(log_pi, dim=1)
-        k_t = torch.tanh(k_t)
-
+        zeros = torch.zeros(mu.size())
+        logstd = self.logstd(zeros)
+        dist = torch.distributions.Normal(mu, logstd.exp())
+        sample = dist.sample()
+        k_t = torch.tanh(sample)
         return k_t
 
 class location_network(nn.Module):

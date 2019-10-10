@@ -1,10 +1,6 @@
-import torch
 import torch.nn as nn
-
-from torch.distributions import Normal
-
 from modules import baseline_network
-from modules import glimpse_network, core_network
+from modules import glimpse_network, decision_network
 from modules import action_network, illumination_network
 
 
@@ -63,6 +59,7 @@ class RecurrentAttention(nn.Module):
         #     torch.nn.ReLU(),
         # )
         self.rnn = LSTMCell(256, hidden_size)
+        self.decision = decision_network(hidden_size, 1)
         # self.rnn_2 = LSTMCell(hidden_size, hidden_size)
         # self.rnn = core_network(hidden_size, hidden_size)
         self.illuminator = illumination_network(hidden_size, 96, std)
@@ -115,15 +112,12 @@ class RecurrentAttention(nn.Module):
         # self.h_t2_prev = h_t
 
         mu = self.illuminator(h_t[0], valid)
+        d, log_d = self.decision(h_t[0])
 
         # we assume both dimensions are independent
         # 1. pdf of the joint is the product of the pdfs
         # 2. log of the product is the sum of the logs
         # log_pi = Normal(mu, self.std).log_prob(k_t)
         # log_pi = torch.sum(log_pi, dim=1)
-
-        if last:
-            log_probas = self.classifier(h_t[0])
-            return h_t, mu, log_probas
-
-        return h_t, mu
+        log_probas = self.classifier(h_t[0])
+        return h_t, mu, log_probas, d, log_d
