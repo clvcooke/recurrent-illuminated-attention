@@ -19,10 +19,7 @@ class RecurrentAttention(nn.Module):
     - Minh et. al., https://arxiv.org/abs/1406.6247
     """
     def __init__(self,
-                 g,
-                 k,
-                 s,
-                 c,
+                 channels,
                  h_g,
                  h_l,
                  std,
@@ -39,23 +36,23 @@ class RecurrentAttention(nn.Module):
           by the retina.
         - k: number of patches to extract per glimpse.
         - s: scaling factor that controls the size of successive patches.
-        - c: number of channels in each image.
+        - c: number of num_channels in each image.
         - h_g: hidden layer size of the fc layer for `phi`.
         - h_l: hidden layer size of the fc layer for `l`.
         - std: standard deviation of the Gaussian policy.
         - hidden_size: hidden size of the rnn.
-        - num_classes: number of classes in the dataset.
+        - num_classes: number of num_classes in the dataset.
         - num_glimpses: number of glimpses to take per image,
           i.e. number of BPTT steps.
         """
         super(RecurrentAttention, self).__init__()
         self.std = std
 
-        self.sensor = glimpse_network(h_g, h_l, g, k, s, c, learned_start)
+        self.sensor = glimpse_network(h_g, h_l, learned_start, channels)
         self.rnn = LSTMCell(256, hidden_size)
         self.decision = decision_network(hidden_size, 2)
-        self.illuminator = illumination_network(hidden_size, 96, std)
-        self.classifier = action_network(hidden_size, 2)
+        self.illuminator = illumination_network(hidden_size, channels, std)
+        self.classifier = action_network(hidden_size, num_classes)
 
     def forward(self, x, k_t_prev, h_t_prev, last=False, valid=False):
         """
@@ -73,7 +70,7 @@ class RecurrentAttention(nn.Module):
           state vector for the previous timestep `t-1`.
         - last: a bool indicating whether this is the last timestep.
           If True, the action network returns an output probability
-          vector over the classes and the baseline `b_t` for the
+          vector over the num_classes and the baseline `b_t` for the
           current timestep `t`. Else, the core network returns the
           hidden state vector for the next timestep `t+1` and them
           location vector for the next timestep `t+1`.
@@ -90,7 +87,7 @@ class RecurrentAttention(nn.Module):
         - b_t: a vector of length (B,). The baseline for the
           current time step `t`.
         - log_probas: a 2D tensor of shape (B, num_classes). The
-          output log probability vector over the classes.
+          output log probability vector over the num_classes.
         - log_pi: a vector of length (B,).
         """
         # sample k-space

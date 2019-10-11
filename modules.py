@@ -6,21 +6,6 @@ from torch.autograd import Variable
 
 import numpy as np
 
-
-class AddBias(nn.Module):
-    def __init__(self, bias, trainable=True):
-        super(AddBias, self).__init__()
-        self._bias = nn.Parameter(bias.unsqueeze(1),
-                                  requires_grad=trainable)
-
-    def forward(self, x):
-        if x.dim() == 2:
-            bias = self._bias.t().view(1, -1)
-        else:
-            bias = self._bias.t().view(1, -1, 1, 1)
-
-        return x + bias
-
 class retina(object):
     """
     A retina that extracts a foveated glimpse `phi`
@@ -47,11 +32,8 @@ class retina(object):
       foveated glimpse of the image.
     """
 
-    def __init__(self, g, k, s):
-        self.g = g
-        self.k = k
-        self.s = s
-
+    def __init__(self):
+        pass
 
     def illuminate(self, x, k):
         """
@@ -99,7 +81,8 @@ class retina(object):
     @staticmethod
     def sample_k_space(k_stack, led_configuration):
         # TODO: there is probably a better/more efficient way to do this...
-        k_space_sample = torch.sum(k_stack * led_configuration.flatten(), axis=-1)
+        k_space_sample = torch.sum(k_stack * led_configuration.flatten(),
+                                   axis=-1)
         return k_space_sample
 
     def extract_k_stack(self, x, k):
@@ -175,18 +158,18 @@ class retina(object):
             # pad tensor in case exceeds
             if self.exceeds(from_x, to_x, from_y, to_y, T):
                 pad_dims = (
-                    size//2+1, size//2+1,
-                    size//2+1, size//2+1,
+                    size // 2 + 1, size // 2 + 1,
+                    size // 2 + 1, size // 2 + 1,
                     0, 0,
                     0, 0,
                 )
                 im = F.pad(im, pad_dims, "constant", 0)
 
                 # add correction factor
-                from_x += (size//2+1)
-                to_x += (size//2+1)
-                from_y += (size//2+1)
-                to_y += (size//2+1)
+                from_x += (size // 2 + 1)
+                to_x += (size // 2 + 1)
+                from_y += (size // 2 + 1)
+                to_y += (size // 2 + 1)
 
             # and finally extract
             patch.append(im[:, :, from_y:to_y, from_x:to_x])
@@ -210,7 +193,7 @@ class retina(object):
         the boundaries of the image of size `T`.
         """
         if (
-            (from_x < 0) or (from_y < 0) or (to_x > T) or (to_y > T)
+                (from_x < 0) or (from_y < 0) or (to_x > T) or (to_y > T)
         ):
             return True
         return False
@@ -241,7 +224,7 @@ class glimpse_network(nn.Module):
       by the retina.
     - k: number of patches to extract per glimpse.
     - s: scaling factor that controls the size of successive patches.
-    - c: number of channels in each image.
+    - c: number of num_channels in each image.
     - x: a 4D Tensor of shape (B, H, W, C). The minibatch
       of images.
     - l_t_prev: a 2D tensor of shape (B, 2). Contains the glimpse
@@ -253,16 +236,15 @@ class glimpse_network(nn.Module):
       representation returned by the glimpse network for the
       current timestep `t`.
     """
-    def __init__(self, h_g, h_l, g, k, s, c, learned_start):
+
+    def __init__(self, h_g, h_l, learned_start, channels):
         super(glimpse_network, self).__init__()
-        self.retina = retina(g, k, s)
+        self.retina = retina()
         self.learned_start = learned_start
         if learned_start:
-            self.conv_layer = torch.nn.Conv2d(96, 1, kernel_size=1, stride=1, bias=True)
-        # glimpse layer
-        D_in = 28*28
-        self.channels = 96
-
+            self.conv_layer = torch.nn.Conv2d(channels, 1, kernel_size=1,
+                                              stride=1, bias=True)
+        self.channels = channels
         self.model_what = torch.nn.Sequential(
             torch.nn.Linear(784, 128),
             torch.nn.BatchNorm1d(128),
@@ -282,12 +264,13 @@ class glimpse_network(nn.Module):
     def forward(self, x, k_t_prev):
         # generate k-sample phi from image x
         if k_t_prev is None and self.learned_start:
-            phi = self.conv_layer(x.permute(0,3,1,2))
-            k_t_prev = self.conv_layer.weight.view(-1, 96).repeat([phi.shape[0], 1])
+            phi = self.conv_layer(x.permute(0, 3, 1, 2))
+            k_t_prev = self.conv_layer.weight.view(-1, self.channels).repeat(
+                [phi.shape[0], 1])
         else:
             if k_t_prev is None:
-                k_t_prev = torch.rand([x.shape[0], self.channels])*2 - 1
-            phi = self.retina.illuminate(x,k_t_prev).view((-1, 1, 28, 28))
+                k_t_prev = torch.rand([x.shape[0], self.channels]) * 2 - 1
+            phi = self.retina.illuminate(x, k_t_prev).view((-1, 1, 28, 28))
 
         res_phi = self.model_what(phi.view((phi.shape[0], -1)))
         res_k = self.model_where(k_t_prev)
@@ -302,7 +285,7 @@ class action_network(nn.Module):
 
     Concretely, feeds the hidden state `h_t` through a fc
     layer followed by a softmax to create a vector of
-    output probabilities over the possible classes.
+    output probabilities over the possible num_classes.
 
     Hence, the environment action `a_t` is drawn from a
     distribution conditioned on an affine transformation
@@ -318,8 +301,9 @@ class action_network(nn.Module):
 
     Returns
     -------
-    - a_t: output probability vector over the classes.
+    - a_t: output probability vector over the num_classes.
     """
+
     def __init__(self, input_size, output_size):
         super(action_network, self).__init__()
         self.fc = nn.Linear(input_size, output_size)
@@ -363,14 +347,11 @@ class illumination_network(nn.Module):
             nn.Linear(input_size, output_size),
             nn.Tanh()
         )
-        self.logstd = AddBias(torch.ones(output_size)*np.log(std), True)
+        self.std = std
 
     def forward(self, h_t, valid=False):
         # compute mean
         mu = self.model(h_t)
-        zeros = torch.zeros(mu.size())
-        logstd = self.logstd(zeros)
-        dist = torch.distributions.Normal(mu, logstd.exp())
-        sample = dist.sample()
-        k_t = torch.tanh(sample)
+        noise = torch.randn_like(mu)*self.std
+        k_t = torch.tanh(mu + noise)
         return k_t

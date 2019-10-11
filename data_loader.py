@@ -1,6 +1,5 @@
 import numpy as np
-from utils import plot_images
-
+import os
 import torch
 from torchvision import datasets
 from torchvision import transforms
@@ -55,41 +54,75 @@ def get_train_valid_loader(data_dir,
     """
     error_msg = "[!] valid_size should be in the range [0, 1]."
     assert ((valid_size >= 0) and (valid_size <= 1)), error_msg
+    task = 'MNIST'
+    if task == 'malaria':
+        datapath_train_images = r"C:\Users\clvco\Documents\Code\K-space_rl-data\malaria_norm.npy"
+        datapath_train_labels = r"C:\Users\clvco\Documents\Code\K-space_rl-data\malaria_labels.npy"
 
-    # datapath_train_images = r"C:\Users\clvco\Documents\Code\K-space_rl-data\Fashion\fashion_train_norm.npy"
-    # datapath_train_labels = r"C:\Users\clvco\Documents\Code\K-space_rl-data\Fashion\fashion_train_labels.npy"
+        datapath_test_images = None
+        datapath_test_labels = None
+        train_fact = 255
+        shuffle_seed = 3
+        channels = 96
+        classes = 2
+    elif task == 'fashion':
+        datapath_test_images = r"C:\Users\clvco\Documents\Code\K-space_rl-data\Fashion\fashion_test_norm.npy"
+        datapath_test_labels = r"C:\Users\clvco\Documents\Code\K-space_rl-data\Fashion\fashion_test_labels.npy"
 
+        datapath_train_images = r"C:\Users\clvco\Documents\Code\K-space_rl-data\Fashion\fashion_train_norm.npy"
+        datapath_train_labels = r"C:\Users\clvco\Documents\Code\K-space_rl-data\Fashion\fashion_train_labels.npy"
 
-    datapath_train_images = r"C:\Users\clvco\Documents\Code\K-space_rl-data\malaria_norm.npy"
-    datapath_train_labels = r"C:\Users\clvco\Documents\Code\K-space_rl-data\malaria_labels.npy"
+        channels = 25
+        classes = 10
+    else:
+        # WINDOWS PATHS
+        test_images_filename = "test_images_v2_fixed_norm.npy"
+        test_labels_filename = "test_labels.npy"
+        train_images_filename = "train_data_norm_v2.npy"
+        train_labels_filename = "train_labels.npy"
+        channels = 25
+        train_fact = 1.0
+        test_fact = 1.0
+        classes = 10
+        # WINDOWS
+        base_dir = "C:/Users/clvco/Documents/Code/K-space_rl-data/"
+        if not os.path.exists(base_dir):
+            # COLAB PATH
+            base_dir = '/content'
+        if not os.path.exists(base_dir):
+            # UBUNTU
+            base_dir = '/home/col/data/k-space-rl'
+        datapath_test_images = os.path.join(base_dir, test_images_filename)
+        datapath_test_labels = os.path.join(base_dir, test_labels_filename)
+        datapath_train_images = os.path.join(base_dir, train_images_filename)
+        datapath_train_labels = os.path.join(base_dir, train_labels_filename)
 
-    # datapath_test_images = r"C:\Users\clvco\Documents\Code\K-space_rl-data\Fashion\fashion_test_norm.npy"
-    # datapath_test_labels = r"C:\Users\clvco\Documents\Code\K-space_rl-data\Fashion\fashion_test_labels.npy"
-
-    data_x = torch.from_numpy(np.load(datapath_train_images)).reshape((-1, 28, 28, 96)).float() / 255
-    # data_x_test = torch.from_numpy(np.load(datapath_test_images)).reshape((-1, 28, 28, 25)).float() / 255
+    if task == 'MNIST':
+        data_x = torch.from_numpy(np.load(datapath_train_images).swapaxes(0,1)).reshape((-1, 28, 28, channels)).float() / train_fact
+    else:
+        data_x = torch.from_numpy(np.load(datapath_train_images)).reshape((-1, 28, 28, channels)).float() / train_fact
     data_y = torch.from_numpy(np.load(datapath_train_labels)).long()
-    # data_y_test = torch.from_numpy(np.load(datapath_test_labels))
-
-
+    if len(data_y.shape) > 1:
+        data_y = torch.argmax(data_y, axis=-1)
     num_train = data_x.shape[0]
-    # num_test = data_x_test.shape[0]
     indices = list(range(num_train))
-    # indices_test = list(range(num_test))
-
-    if shuffle:
+    dataset = CustomDataset(data_x, data_y)
+    if datapath_test_images is None:
         np.random.seed(3)
         np.random.shuffle(indices)
-        # np.random.seed(12)
-
-    train_idx, valid_idx = indices[:800], indices[800:]
-
+        train_idx, valid_idx = indices[:800], indices[800:]
+        test_dataset = CustomDataset(data_x, data_y)
+    else:
+        data_x_test = torch.from_numpy(np.load(datapath_test_images)).reshape(
+            (-1, 28, 28, channels)).float() / test_fact
+        data_y_test = torch.from_numpy(np.load(datapath_test_labels))
+        if len(data_y_test.shape) > 1:
+            data_y_test = torch.argmax(data_y_test, axis=-1)
+        num_test = data_x_test.shape[0]
+        train_idx, valid_idx = indices, list(range(num_test))
+        test_dataset = CustomDataset(data_x_test, data_y_test)
     train_sampler = SubsetRandomSampler(train_idx)
     valid_sampler = SubsetRandomSampler(valid_idx)
-
-    dataset = CustomDataset(data_x, data_y)
-    test_dataset = CustomDataset(data_x, data_y)
-
     train_loader = torch.utils.data.DataLoader(
         dataset, batch_size=batch_size, sampler=train_sampler,
         num_workers=num_workers, pin_memory=pin_memory,
@@ -99,20 +132,8 @@ def get_train_valid_loader(data_dir,
         test_dataset, batch_size=batch_size, sampler=valid_sampler,
         num_workers=num_workers, pin_memory=pin_memory,
     )
-    #
-    # # visualize some images
-    # if show_sample:
-    #     sample_loader = torch.utils.data.DataLoader(
-    #         dataset, batch_size=9, shuffle=shuffle,
-    #         num_workers=num_workers, pin_memory=pin_memory
-    #     )
-    #     data_iter = iter(sample_loader)
-    #     images, labels = data_iter.next()
-    #     X = images.numpy()
-    #     X = np.transpose(X, [0, 2, 3, 1])
-    #     plot_images(X, labels)
 
-    return (train_loader, valid_loader)
+    return train_loader, valid_loader, channels, classes
 
 
 def get_test_loader(data_dir,

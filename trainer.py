@@ -56,14 +56,15 @@ class Trainer(object):
         if config.is_train:
             self.train_loader = data_loader[0]
             self.valid_loader = data_loader[1]
+            self.num_channels = data_loader[2]
+            self.num_classes = data_loader[3]
             self.num_train = len(self.train_loader.sampler.indices)
             self.num_valid = len(self.valid_loader.sampler.indices)
         else:
             self.test_loader = data_loader
             self.num_test = len(self.test_loader.dataset)
-        self.num_classes = 2
-        self.num_channels = 1
-
+            self.num_channels = data_loader[1]
+            self.num_classes = data_loader[2]
         # training params
         self.epochs = config.epochs
         self.start_epoch = 0
@@ -92,18 +93,8 @@ class Trainer(object):
         self.plot_dir = './plots/' + self.model_name + '/'
         if not os.path.exists(self.plot_dir):
             os.makedirs(self.plot_dir)
-
-        # configure tensorboard logging
-        # if self.use_tensorboard:
-        #     tensorboard_dir = self.logs_dir + self.model_name
-        #     print('[*] Saving tensorboard logs to {}'.format(tensorboard_dir))
-        #     if not os.path.exists(tensorboard_dir):
-        #         os.makedirs(tensorboard_dir)
-        #     configure(tensorboard_dir)
-
         # build RAM model
         self.model = RecurrentAttention(
-            self.patch_size, self.num_patches, self.glimpse_scale,
             self.num_channels, self.loc_hidden, self.glimpse_hidden,
             self.std, self.hidden_size, self.num_classes, self.config.learned_start
         )
@@ -113,37 +104,11 @@ class Trainer(object):
         print('[*] Number of model parameters: {:,}'.format(
             sum([p.data.nelement() for p in self.model.parameters()])))
 
-        # # initialize optimizer and scheduler
-        # self.optimizer = optim.SGD(
-        #     self.model.parameters(), lr=self.lr, momentum=self.momentum,
-        # )
-        # self.scheduler = ReduceLROnPlateau(
-        #     self.optimizer, 'min', patience=self.lr_patience
-        # )
         self.optimizer = optim.Adam(
-            self.model.parameters(), lr=3e-3,
+            self.model.parameters(), lr=self.lr
         )
 
         wandb.watch(self.model, log="all")
-
-    def reset(self, batch_size):
-        """
-        Initialize the hidden state of the core network
-        and the location vector.
-
-        This is called once every time a new minibatch
-        `x` is introduced.
-        """
-        dtype = (
-            torch.cuda.FloatTensor if self.use_gpu else torch.FloatTensor
-        )
-
-        h_t = torch.zeros(batch_size, self.hidden_size)
-        h_t = Variable(h_t).type(dtype)
-
-        l_t = None
-
-        return h_t, l_t
 
     def train(self):
         """
@@ -167,8 +132,6 @@ class Trainer(object):
                 '\nEpoch: {}/{} - LR: {:.6f}'.format(
                     epoch+1, self.epochs, self.lr)
             )
-
-
 
             # train for 1 epoch
             train_loss, train_acc, glimpses = self.train_one_epoch(epoch)
@@ -245,10 +208,6 @@ class Trainer(object):
                     else:
                         x[b] = x[b].transpose(0, 1).flip(1)
 
-
-                plot = False
-                if (epoch % self.plot_freq == 0) and (i == 0):
-                    plot = True
                 loss, glm, acc = self.rollout(x, y)
                 glimpses.update(glm)
                 # store
@@ -290,7 +249,7 @@ class Trainer(object):
 
     def rollout(self, x, y):
         batch_size = x.shape[0]
-        h_t, l_t = self.reset(batch_size)
+        l_t = None
         h_t = None
 
         # extract the glimpses
@@ -357,8 +316,8 @@ class Trainer(object):
                 decision_scaling.append(1.0)
             else:
                 raise RuntimeError("how did we get here?")
-        decision_target = torch.tensor(decision_target)
-        decision_scaling = torch.tensor(decision_scaling)
+        decision_target = torch.tensor(decision_target, device=log_ds.device)
+        decision_scaling = torch.tensor(decision_scaling, device=log_ds.device)
         # now take the error between our decision target and log_ds
         loss_decision = (F.nll_loss(log_ds, decision_target,
                                     reduction='none') * decision_scaling).mean()
