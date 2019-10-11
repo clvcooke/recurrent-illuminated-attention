@@ -74,6 +74,9 @@ train_arg.add_argument('--train_patience', type=int, default=1000,
                        help='Number of epochs to wait before stopping train')
 train_arg.add_argument('--loss_balance', type=float, default=1.0,
                        help='loss balance')
+train_arg.add_argument('--learned_start', type=bool, default=True,
+                       help='If the first pattern should be learned')
+
 
 # other params
 misc_arg = add_argument_group('Misc.')

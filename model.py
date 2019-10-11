@@ -1,7 +1,7 @@
 import torch.nn as nn
-from modules import baseline_network
 from modules import glimpse_network, decision_network
 from modules import action_network, illumination_network
+from torch.nn import LSTMCell
 
 
 class RecurrentAttention(nn.Module):
@@ -27,7 +27,8 @@ class RecurrentAttention(nn.Module):
                  h_l,
                  std,
                  hidden_size,
-                 num_classes):
+                 num_classes,
+                 learned_start):
         """
         Initialize the recurrent attention model and its
         different components.
@@ -50,21 +51,11 @@ class RecurrentAttention(nn.Module):
         super(RecurrentAttention, self).__init__()
         self.std = std
 
-        self.sensor = glimpse_network(h_g, h_l, g, k, s, c)
-        from torch.nn import LSTMCell
-        # self.fake_rnn = torch.nn.Sequential(
-        #     torch.nn.Linear(128, 128),
-        #     torch.nn.ReLU(),
-        #     torch.nn.Linear(128, hidden_size),
-        #     torch.nn.ReLU(),
-        # )
+        self.sensor = glimpse_network(h_g, h_l, g, k, s, c, learned_start)
         self.rnn = LSTMCell(256, hidden_size)
-        self.decision = decision_network(hidden_size, 1)
-        # self.rnn_2 = LSTMCell(hidden_size, hidden_size)
-        # self.rnn = core_network(hidden_size, hidden_size)
+        self.decision = decision_network(hidden_size, 2)
         self.illuminator = illumination_network(hidden_size, 96, std)
         self.classifier = action_network(hidden_size, 2)
-        self.baseliner = baseline_network(hidden_size, 1)
 
     def forward(self, x, k_t_prev, h_t_prev, last=False, valid=False):
         """

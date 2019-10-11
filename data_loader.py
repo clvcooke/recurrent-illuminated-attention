@@ -66,7 +66,7 @@ def get_train_valid_loader(data_dir,
     # datapath_test_images = r"C:\Users\clvco\Documents\Code\K-space_rl-data\Fashion\fashion_test_norm.npy"
     # datapath_test_labels = r"C:\Users\clvco\Documents\Code\K-space_rl-data\Fashion\fashion_test_labels.npy"
 
-    data_x = torch.from_numpy(np.load(datapath_train_images)).reshape((-1, 28, 28, 96)).float()
+    data_x = torch.from_numpy(np.load(datapath_train_images)).reshape((-1, 28, 28, 96)).float() / 255
     # data_x_test = torch.from_numpy(np.load(datapath_test_images)).reshape((-1, 28, 28, 25)).float() / 255
     data_y = torch.from_numpy(np.load(datapath_train_labels)).long()
     # data_y_test = torch.from_numpy(np.load(datapath_test_labels))

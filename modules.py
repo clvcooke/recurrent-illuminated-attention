@@ -199,7 +199,7 @@ class retina(object):
     def denormalize(self, T, coords):
         """
         Convert coordinates in the range [-1, 1] to
-        coordinates in the range [0, T] where `T` is
+        coordinates in the range [0, T] model_where `T` is
         the size of the image.
         """
         return (0.5 * ((coords + 1.0) * T)).long()
@@ -218,11 +218,11 @@ class retina(object):
 
 class glimpse_network(nn.Module):
     """
-    A network that combines the "what" and the "where"
+    A network that combines the "what" and the "model_where"
     into a glimpse feature vector `g_t`.
 
     - "what": glimpse extracted from the retina.
-    - "where": location tuple where glimpse was extracted.
+    - "model_where": location tuple model_where glimpse was extracted.
 
     Concretely, feeds the output of the retina `phi` to
     a fc layer and the glimpse location vector `l_t_prev`
@@ -253,57 +253,44 @@ class glimpse_network(nn.Module):
       representation returned by the glimpse network for the
       current timestep `t`.
     """
-    def __init__(self, h_g, h_l, g, k, s, c):
+    def __init__(self, h_g, h_l, g, k, s, c, learned_start):
         super(glimpse_network, self).__init__()
         self.retina = retina(g, k, s)
-        self.conv_layer = torch.nn.Conv2d(96, 1, kernel_size=1, stride=1, bias=True)
+        self.learned_start = learned_start
+        if learned_start:
+            self.conv_layer = torch.nn.Conv2d(96, 1, kernel_size=1, stride=1, bias=True)
         # glimpse layer
         D_in = 28*28
+        self.channels = 96
 
-        self.alexnet = torch.nn.Sequential(
-            torch.nn.Conv2d(1, 4, kernel_size=3, stride=1),
-            torch.nn.ReLU(),
-            torch.nn.Conv2d(4, 4, kernel_size=3, stride=1),
-            torch.nn.ReLU(),
-            torch.nn.Conv2d(4, 8, kernel_size=3, stride=1),
-            torch.nn.ReLU(),
-            torch.nn.Conv2d(8, 16, kernel_size=3, stride=1),
-            torch.nn.ReLU(),
-            torch.nn.Conv2d(16, 16, kernel_size=3, stride=1),
-            torch.nn.ReLU(),
-            torch.nn.MaxPool2d(kernel_size=2),
-            torch.nn.Conv2d(16, 32, kernel_size=3),
-            torch.nn.ReLU(),
-            torch.nn.Conv2d(32, 32, kernel_size=3),
-            torch.nn.ReLU(),
-            torch.nn.MaxPool2d(kernel_size=2)
-        )
-
-        self.linear_layers = torch.nn.Sequential(
+        self.model_what = torch.nn.Sequential(
             torch.nn.Linear(784, 128),
+            torch.nn.BatchNorm1d(128),
             torch.nn.ReLU(),
-            torch.nn.Linear(128, 256)
-            # torch.nn.ReLU()
+            torch.nn.Linear(128, 256),
+            torch.nn.BatchNorm1d(256)
         )
 
-        self.where = torch.nn.Sequential(
-            torch.nn.Linear(96, 128),
+        self.model_where = torch.nn.Sequential(
+            torch.nn.Linear(self.channels, 128),
+            torch.nn.BatchNorm1d(128),
             torch.nn.ReLU(),
-            torch.nn.Linear(128, 256)
-            # torch.nn.ReLU()
+            torch.nn.Linear(128, 256),
+            torch.nn.BatchNorm1d(256)
         )
 
     def forward(self, x, k_t_prev):
         # generate k-sample phi from image x
-        if k_t_prev is None:
+        if k_t_prev is None and self.learned_start:
             phi = self.conv_layer(x.permute(0,3,1,2))
             k_t_prev = self.conv_layer.weight.view(-1, 96).repeat([phi.shape[0], 1])
         else:
+            if k_t_prev is None:
+                k_t_prev = torch.rand([x.shape[0], self.channels])*2 - 1
             phi = self.retina.illuminate(x,k_t_prev).view((-1, 1, 28, 28))
 
-        # res = self.alexnet(phi).view((phi.shape[0], -1))
-        res_phi = self.linear_layers(phi.view((phi.shape[0], -1)))
-        res_k = self.where(k_t_prev)
+        res_phi = self.model_what(phi.view((phi.shape[0], -1)))
+        res_k = self.model_where(k_t_prev)
         res = F.relu(res_k + res_phi)
         return res
 
@@ -336,8 +323,6 @@ class action_network(nn.Module):
     def __init__(self, input_size, output_size):
         super(action_network, self).__init__()
         self.fc = nn.Linear(input_size, output_size)
-        # self.fc2  = nn.Linear(64, 64)
-        # self.fc3 = nn.Linear(64, output_size)
 
     def forward(self, h_t):
         a_t = F.log_softmax((self.fc(h_t)), dim=1)
@@ -347,12 +332,16 @@ class action_network(nn.Module):
 class decision_network(nn.Module):
     def __init__(self, input_size, output_size):
         super(decision_network, self).__init__()
-        self.fc = nn.Linear(input_size, 2)
-        # self.fc2  = nn.Linear(64, 64)
-        # self.fc3 = nn.Linear(64, output_size)
+        self.model = nn.Sequential(
+            nn.Linear(input_size, input_size),
+            nn.BatchNorm1d(input_size),
+            nn.ReLU(),
+            nn.Linear(input_size, output_size),
+            nn.Softmax(dim=1)
+        )
 
     def forward(self, h_t):
-        probs = F.softmax((self.fc(h_t)), dim=1)
+        probs = self.model(h_t)
         try:
             sample = torch.distributions.Categorical(probs=probs).sample()
         except:
@@ -361,99 +350,27 @@ class decision_network(nn.Module):
         probs = torch.log(probs)
         return sample, probs
 
+
 class illumination_network(nn.Module):
 
     def __init__(self, input_size, output_size, std):
         super(illumination_network, self).__init__()
         self.std = std
-        self.fc = nn.Linear(input_size, output_size)
+        self.model = nn.Sequential(
+            nn.Linear(input_size, input_size),
+            nn.BatchNorm1d(input_size),
+            nn.ReLU(),
+            nn.Linear(input_size, output_size),
+            nn.Tanh()
+        )
         self.logstd = AddBias(torch.ones(output_size)*np.log(std), True)
 
     def forward(self, h_t, valid=False):
         # compute mean
-        mu = self.fc(h_t)
+        mu = self.model(h_t)
         zeros = torch.zeros(mu.size())
         logstd = self.logstd(zeros)
         dist = torch.distributions.Normal(mu, logstd.exp())
         sample = dist.sample()
         k_t = torch.tanh(sample)
         return k_t
-
-class location_network(nn.Module):
-    """
-    Uses the internal state `h_t` of the core network to
-    produce the location coordinates `l_t` for the next
-    time step.
-
-    Concretely, feeds the hidden state `h_t` through a fc
-    layer followed by a tanh to clamp the output beween
-    [-1, 1]. This produces a 2D vector of means used to
-    parametrize a two-component Gaussian with a fixed
-    variance from which the location coordinates `l_t`
-    for the next time step are sampled.
-
-    Hence, the location `l_t` is chosen stochastically
-    from a distribution conditioned on an affine
-    transformation of the hidden state vector `h_t`.
-
-    Args
-    ----
-    - input_size: input size of the fc layer.
-    - output_size: output size of the fc layer.
-    - std: standard deviation of the normal distribution.
-    - h_t: the hidden state vector of the core network for
-      the current time step `t`.
-
-    Returns
-    -------
-    - mu: a 2D vector of shape (B, 2).
-    - l_t: a 2D vector of shape (B, 2).
-    """
-    def __init__(self, input_size, output_size, std):
-        super(location_network, self).__init__()
-        self.std = std
-        self.fc = nn.Linear(input_size, output_size)
-
-    def forward(self, h_t):
-        # compute mean
-        mu = F.tanh(self.fc(h_t.detach()))
-
-        # reparametrization trick
-        noise = torch.zeros_like(mu)
-        noise.data.normal_(std=self.std)
-        l_t = mu + noise
-
-        # bound between [-1, 1]
-        l_t = F.tanh(l_t)
-        from torch.distributions import Normal
-
-        log_pi = Normal(mu, self.std).log_prob(l_t)
-        log_pi = torch.sum(log_pi, dim=1)
-
-        return mu, l_t, log_pi
-
-
-class baseline_network(nn.Module):
-    """
-    Regresses the baseline in the reward function
-    to reduce the variance of the gradient update.
-
-    Args
-    ----
-    - input_size: input size of the fc layer.
-    - output_size: output size of the fc layer.
-    - h_t: the hidden state vector of the core network
-      for the current time step `t`.
-
-    Returns
-    -------
-    - b_t: a 2D vector of shape (B, 1). The baseline
-      for the current time step `t`.
-    """
-    def __init__(self, input_size, output_size):
-        super(baseline_network, self).__init__()
-        self.fc = nn.Linear(input_size, output_size)
-
-    def forward(self, h_t):
-        b_t = F.relu(self.fc(h_t.detach()))
-        return b_t
