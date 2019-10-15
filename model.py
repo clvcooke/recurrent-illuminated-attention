@@ -109,3 +109,4 @@ class RecurrentAttention(nn.Module):
         # log_pi = torch.sum(log_pi, dim=1)
         log_probas = self.classifier(h_t[0])
         return h_t, mu, log_probas, d, log_d
+

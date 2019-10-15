@@ -3,7 +3,6 @@ import torch.nn.functional as F
 
 from torch.autograd import Variable
 import torch.optim as optim
-from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 import os
 import time
@@ -26,6 +25,7 @@ class Trainer(object):
     All hyperparameters are provided by the user in the
     config file.
     """
+
     def __init__(self, config, data_loader):
         """
         Construct a new Trainer instance.
@@ -93,6 +93,7 @@ class Trainer(object):
         self.plot_dir = './plots/' + self.model_name + '/'
         if not os.path.exists(self.plot_dir):
             os.makedirs(self.plot_dir)
+
         # build RAM model
         self.model = RecurrentAttention(
             self.num_channels, self.loc_hidden, self.glimpse_hidden,
@@ -130,8 +131,9 @@ class Trainer(object):
             self.curr_epoch = epoch
             print(
                 '\nEpoch: {}/{} - LR: {:.6f}'.format(
-                    epoch+1, self.epochs, self.lr)
+                    epoch + 1, self.epochs, self.lr)
             )
+            print('loss_params', LOSS_BALANCE)
 
             # train for 1 epoch
             train_loss, train_acc, glimpses = self.train_one_epoch(epoch)
@@ -188,7 +190,6 @@ class Trainer(object):
         losses = AverageMeter()
         accs = AverageMeter()
         glimpses = AverageMeter()
-
         tic = time.time()
         with tqdm(total=self.num_train) as pbar:
             for i, (x, y) in enumerate(self.train_loader):
@@ -211,12 +212,13 @@ class Trainer(object):
                 loss, glm, acc = self.rollout(x, y)
                 glimpses.update(glm)
                 # store
+                accs.update(acc.data.item())
                 try:
                     losses.update(loss.data[0], x.size()[0])
-                    accs.update(acc.data[0], x.size()[0])
                 except:
                     losses.update(loss.data.item(), x.size()[0])
                     accs.update(acc.data.item(), x.size()[0])
+
                 # compute gradients and update SGD
                 self.optimizer.zero_grad()
                 loss = loss
@@ -227,18 +229,18 @@ class Trainer(object):
 
                 # measure elapsed time
                 toc = time.time()
-                batch_time.update(toc-tic)
+                batch_time.update(toc - tic)
 
                 try:
-                    loss_data =loss.data[0]
+                    loss_data = loss.data[0]
                     acc_data = acc.data[0]
                 except IndexError:
                     loss_data = loss.data.item()
                     acc_data = acc.data.item()
                 pbar.set_description(
                     (
-                        "{:.1f}s - loss: {:.3f} - acc: {:.3f}".format(
-                            (toc-tic), loss_data, acc_data
+                        "{:.1f}s - loss: {:.3f} - acc: {:.3f}, glm {:.3f}".format(
+                            (toc - tic), losses.avg, accs.avg, glimpses.avg
                         )
                     )
                 )
@@ -329,12 +331,15 @@ class Trainer(object):
 
         return loss, sum(glimpse_totals) / batch_size, acc
 
+
     def validate(self, epoch):
         """
         Evaluate the model on the validation set.
         """
         losses = AverageMeter()
         accs = AverageMeter()
+
+        batch_time = AverageMeter()
         glimpses = AverageMeter()
 
         for i, (x, y) in enumerate(self.valid_loader):
@@ -342,14 +347,12 @@ class Trainer(object):
                 x, y = x.cuda(), y.cuda()
             x, y = Variable(x), Variable(y)
             loss, glm, acc = self.rollout(x,y)
-
             glimpses.update(glm)
+
             # store
             try:
-                losses.update(loss.data[0], x.size()[0])
                 accs.update(acc.data[0], x.size()[0])
             except:
-                losses.update(loss.data.item(), x.size()[0])
                 accs.update(acc.data.item(), x.size()[0])
 
         return losses.avg, accs.avg, glimpses.avg
