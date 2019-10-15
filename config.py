@@ -24,7 +24,7 @@ glimpse_arg.add_argument('--num_patches', type=int, default=1,
                          help='# of downscaled patches per glimpse')
 glimpse_arg.add_argument('--loc_hidden', type=int, default=128,
                          help='hidden size of loc fc')
-glimpse_arg.add_argument('--glimpse_hidden', type=int, default=128,
+glimpse_arg.add_argument('--glimpse_hidden', type=int, default=0,
                          help='hidden size of glimpse fc')
 
 
@@ -64,14 +64,18 @@ train_arg.add_argument('--is_train', type=str2bool, default=True,
                        help='Whether to train or test the model')
 train_arg.add_argument('--momentum', type=float, default=0.5,
                        help='Nesterov momentum value')
-train_arg.add_argument('--epochs', type=int, default=200,
+train_arg.add_argument('--epochs', type=int, default=500,
                        help='# of epochs to train for')
 train_arg.add_argument('--init_lr', type=float, default=3e-4,
                        help='Initial learning rate value')
 train_arg.add_argument('--lr_patience', type=int, default=10,
                        help='Number of epochs to wait before reducing lr')
-train_arg.add_argument('--train_patience', type=int, default=50,
+train_arg.add_argument('--train_patience', type=int, default=1000,
                        help='Number of epochs to wait before stopping train')
+train_arg.add_argument('--loss_balance', type=float, default=1.0,
+                       help='loss balance')
+train_arg.add_argument('--learned_start', type=bool, default=True,
+                       help='If the first pattern should be learned')
 
 
 # other params

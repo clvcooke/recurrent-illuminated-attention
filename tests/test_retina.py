@@ -23,7 +23,7 @@ data_dir = '../data/'
 def denormalize(T, coords):
     """
     Convert coordinates in the range [-1, 1] to
-    coordinates in the range [0, T] where T is
+    coordinates in the range [0, T] model_where T is
     the size of the image.
     """
     return (0.5 * ((coords + 1.0) * T)).long()

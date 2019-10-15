@@ -13,13 +13,8 @@ from tqdm import tqdm
 from utils import AverageMeter
 from model import RecurrentAttention
 
-LOSS_BALANCE = {
-    'loss_correct': 1.0,
-    'loss_incorrect': 1.0,
-    'loss_timeout': 1.0,
-    'reinforce_loss': 1,
-    'classification_loss': 1
-}
+import wandb
+wandb.init("RVA")
 
 
 class Trainer(object):
@@ -61,19 +56,21 @@ class Trainer(object):
         if config.is_train:
             self.train_loader = data_loader[0]
             self.valid_loader = data_loader[1]
+            self.num_channels = data_loader[2]
+            self.num_classes = data_loader[3]
             self.num_train = len(self.train_loader.sampler.indices)
             self.num_valid = len(self.valid_loader.sampler.indices)
         else:
             self.test_loader = data_loader
             self.num_test = len(self.test_loader.dataset)
-        self.num_classes = 10
-        self.num_channels = 1
-
+            self.num_channels = data_loader[1]
+            self.num_classes = data_loader[2]
         # training params
         self.epochs = config.epochs
         self.start_epoch = 0
         self.momentum = config.momentum
         self.lr = config.init_lr
+        self.loss_balance = config.loss_balance
 
         # misc params
         self.use_gpu = config.use_gpu
@@ -97,22 +94,10 @@ class Trainer(object):
         if not os.path.exists(self.plot_dir):
             os.makedirs(self.plot_dir)
 
-        #configure tensorboard logging
-        if self.use_tensorboard:
-            tensorboard_dir = self.logs_dir + self.model_name
-            print('[*] Saving tensorboard logs to {}'.format(tensorboard_dir))
-            if not os.path.exists(tensorboard_dir):
-                os.makedirs(tensorboard_dir)
-            else:
-                import  random
-                tensorboard_dir = tensorboard_dir + str(random.randint(0, 9999999999))
-                os.makedirs(tensorboard_dir)
-
         # build RAM model
         self.model = RecurrentAttention(
-            self.patch_size, self.num_patches, self.glimpse_scale,
             self.num_channels, self.loc_hidden, self.glimpse_hidden,
-            self.std, self.hidden_size, self.num_classes,
+            self.std, self.hidden_size, self.num_classes, self.config.learned_start
         )
         if self.use_gpu:
             self.model.cuda()
@@ -120,36 +105,11 @@ class Trainer(object):
         print('[*] Number of model parameters: {:,}'.format(
             sum([p.data.nelement() for p in self.model.parameters()])))
 
-        # # initialize optimizer and scheduler
-        # self.optimizer = optim.SGD(
-        #     self.model.parameters(), lr=self.lr, momentum=self.momentum,
-        # )
-        # self.scheduler = ReduceLROnPlateau(
-        #     self.optimizer, 'min', patience=self.lr_patience
-        # )
         self.optimizer = optim.Adam(
-            self.model.parameters(), lr=3e-4,
+            self.model.parameters(), lr=self.lr
         )
 
-    def reset(self):
-        """
-        Initialize the hidden state of the core network
-        and the location vector.
-
-        This is called once every time a new minibatch
-        `x` is introduced.
-        """
-        dtype = (
-            torch.cuda.FloatTensor if self.use_gpu else torch.FloatTensor
-        )
-
-        h_t = torch.zeros(self.batch_size, self.hidden_size)
-        h_t = Variable(h_t).type(dtype)
-
-        l_t = torch.Tensor(self.batch_size, 25).uniform_(-1, 1)
-        l_t = Variable(l_t).type(dtype)
-
-        return h_t, l_t
+        wandb.watch(self.model, log="all")
 
     def train(self):
         """
@@ -168,7 +128,7 @@ class Trainer(object):
         )
 
         for epoch in range(self.start_epoch, self.epochs):
-
+            self.curr_epoch = epoch
             print(
                 '\nEpoch: {}/{} - LR: {:.6f}'.format(
                     epoch + 1, self.epochs, self.lr)
@@ -176,22 +136,26 @@ class Trainer(object):
             print('loss_params', LOSS_BALANCE)
 
             # train for 1 epoch
-            train_loss, train_acc = self.train_one_epoch(epoch)
-
+            train_loss, train_acc, glimpses = self.train_one_epoch(epoch)
             # evaluate on validation set
-            valid_loss, valid_acc, valid_glm = self.validate(epoch)
-
+            valid_loss, valid_acc, val_glimpses = self.validate(epoch)
             # # reduce lr if validation loss plateaus
             # self.scheduler.step(valid_loss)
 
             is_best = valid_acc > self.best_valid_acc
-            msg1 = "train loss: {:.3f} - train acc: {:.3f} "
-            msg2 = "- val loss: {:.3f} - val acc: {:.3f} - val vlm: {:.3f}"
+            msg1 = "train loss: {:.3f} - train acc: {:.3f} - train glm {:.3f}"
+            msg2 = "- val loss: {:.3f} - val acc: {:.3f} - val glm {:.3f}"
             if is_best:
                 self.counter = 0
                 msg2 += " [*]"
             msg = msg1 + msg2
-            print(msg.format(train_loss, train_acc, valid_loss, valid_acc, valid_glm))
+            print(msg.format(train_loss, train_acc, glimpses, valid_loss, valid_acc, val_glimpses))
+            wandb.log({
+                "test_accuracy": valid_acc,
+                "train_accuracy": train_acc,
+                'train_glimpses': glimpses,
+                'val_glimpses': val_glimpses
+            })
 
             # check for improvement
             if not is_best:
@@ -207,6 +171,11 @@ class Trainer(object):
                  'best_valid_acc': self.best_valid_acc,
                  }, is_best
             )
+            # decay
+            # for param_group in self.optimizer.param_groups:
+            #     old_lr = param_group['lr']
+            #     param_group['lr'] = param_group['lr']*0.98
+            # print(f"Reducing LR from {old_lr} to {old_lr*0.98}")
 
     def train_one_epoch(self, epoch):
         """
@@ -221,7 +190,6 @@ class Trainer(object):
         losses = AverageMeter()
         accs = AverageMeter()
         glimpses = AverageMeter()
-        device = None
         tic = time.time()
         with tqdm(total=self.num_train) as pbar:
             for i, (x, y) in enumerate(self.train_loader):
@@ -229,159 +197,34 @@ class Trainer(object):
                     x, y = x.cuda(), y.cuda()
                 x, y = Variable(x), Variable(y)
 
-                if (epoch % self.plot_freq == 0) and (i == 0):
-                    plot = True
-                plot = False
-
-                # initialize location vector and hidden state
-                self.batch_size = x.shape[0]
-                h_t, l_t = self.reset()
-
-                # original implementation did this anyways, what a waste...
-                if plot:
-                    # save images
-                    imgs = [x[0:9]]
-
-                # extract the glimpses
-                locs = []
-                log_pi = []
-                baselines = []
-                total_glimpses = 0
-                # we want to run this loop UNTIL they are all done,
-                # that will involve some "dummy" forward passes
-                # need to track when each element of the batch is actually
-                # done to do proper masking
-
-                # use None so everything errors out if I don't explicitly set it
-                prob_as = [None for _ in range(self.batch_size)]
-                log_ds = [None for _ in range(self.batch_size)]
-                done_indices = [-1 for _ in range(self.batch_size)]
-                timeouts = [False for _ in range(self.batch_size)]
-                glimpse_totals = [None for _ in range(self.batch_size)]
-                for t in range(self.num_glimpses):
-                    total_glimpses += 1
-                    # forward pass through model
-                    h_t, l_t, b_t, p, prob_a, log_d, d_t = self.model(x, l_t,
-                                                                      h_t)
-
-                    for batch_ind in range(self.batch_size):
-                        if done_indices[batch_ind] > -1:
-                            # already done
-                            continue
-                        elif d_t[batch_ind] == 1:
-                            glimpse_totals[batch_ind] = t + 1
-                            # mark as done
-                            done_indices[batch_ind] = t
-                            # save the log_d
-                            log_ds[batch_ind] = log_d[batch_ind]
-                            # save the prob_a
-                            prob_as[batch_ind] = prob_a[batch_ind]
-                        elif t == self.num_glimpses - 1:
-                            # glimpses are timing out
-                            timeouts[batch_ind] = True
-                            glimpse_totals[batch_ind] = t + 1
-                            # mark as done
-                            done_indices[batch_ind] = t
-                            # save the log_d
-                            log_ds[batch_ind] = log_d[batch_ind]
-                            # save the prob_a
-                            prob_as[batch_ind] = prob_a[batch_ind]
-                    # store
-                    if plot:
-                        locs.append(l_t[0:9])
-                    baselines.append(b_t)
-                    log_pi.append(p)
-                    if all([done_index > -1 for done_index in done_indices]):
-                        break
-
-                glimpses.update(sum(glimpse_totals) / self.batch_size)
-
-                # now get the correct prob_as, we only saved the good ones :)
-                prob_as = torch.stack(prob_as)
-                log_ds = torch.stack(log_ds)
-
-                if device is None:
-                    if prob_as.is_cuda:
-                        device = torch.device('cuda')
+                import numpy as np
+                for b in range(x.shape[0]):
+                    random_rotation = np.random.randint(0, 4)
+                    if random_rotation == 0:
+                        pass
+                    elif random_rotation == 1:
+                        x[b] = x[b].transpose(0, 1)
+                    elif random_rotation == 2:
+                        x[b] = x[b].flip(1)
                     else:
-                        device = torch.device('cpu')
+                        x[b] = x[b].transpose(0, 1).flip(1)
 
-                # calculate reward
-                predicted = torch.max(prob_as, 1)[1]
-                R = (predicted.detach() == y.long()).float()
-                R = R.unsqueeze(1).repeat(1, total_glimpses)
-
-                # calculate "single" losses,
-                # losses that only apply to the last valid time-step
-
-                # first construct a target vector based on the outcome
-                decision_target = []
-                decision_scaling = []
-                for batch_ind in range(self.batch_size):
-                    if timeouts[batch_ind]:
-                        decision_target.append(1)
-                        decision_scaling.append(LOSS_BALANCE['loss_timeout'])
-                    elif R[batch_ind][0] == 1:
-                        decision_target.append(1)
-                        decision_scaling.append(LOSS_BALANCE['loss_correct'])
-                    elif R[batch_ind][0] == 0:
-                        decision_target.append(0)
-                        decision_scaling.append(LOSS_BALANCE['loss_incorrect'])
-                    else:
-                        raise RuntimeError("how did we get here?")
-                decision_target = torch.tensor(decision_target, device=device)
-                decision_scaling = torch.tensor(decision_scaling, device=device)
-                # now take the error between our decision target and log_ds
-                loss_decision = (F.nll_loss(log_ds, decision_target,
-                                            reduction='none') * decision_scaling).mean()
-                # compute losses for differentiable modules
-                loss_action = F.nll_loss(prob_a, y) * LOSS_BALANCE[
-                    'classification_loss']
-                # convert list to tensors and reshape
-                if len(baselines) > 1:
-
-                    # construct a mask because the steps vary
-                    # mask will be (batch_size,total_glimpses) in size
-                    loss_masks = torch.zeros((self.batch_size, total_glimpses),
-                                             requires_grad=False, device=device)
-                    # TODO vectorize this operation
-                    for b in range(self.batch_size):
-                        end_index = done_indices[b] + 1
-                        loss_masks[b, :end_index] = 1
-
-                    baselines = torch.stack(baselines).transpose(1, 0)
-                    log_pi = torch.stack(log_pi).transpose(1, 0)
-
-                    loss_baseline = F.mse_loss(baselines * loss_masks,
-                                               R * loss_masks) * LOSS_BALANCE[
-                                        'reinforce_loss']
-
-                    # compute reinforce loss
-                    # summed over timesteps and averaged across batch
-                    adjusted_reward = R - baselines.detach()
-                    loss_reinforce = torch.sum(-log_pi * adjusted_reward, dim=1)
-                    loss_reinforce = torch.mean(loss_reinforce, dim=0) * \
-                                     LOSS_BALANCE['reinforce_loss']
-                    # sum up into a hybrid loss
-                    loss = loss_action + loss_baseline + \
-                           loss_reinforce + loss_decision
-                else:
-                    loss = loss_action + loss_decision
-
-                # compute accuracy
-                correct = (predicted == y).float()
-                acc = 100 * (correct.sum() / len(y))
-
+                loss, glm, acc = self.rollout(x, y)
+                glimpses.update(glm)
                 # store
                 accs.update(acc.data.item())
                 try:
                     losses.update(loss.data[0], x.size()[0])
                 except:
                     losses.update(loss.data.item(), x.size()[0])
+                    accs.update(acc.data.item(), x.size()[0])
 
                 # compute gradients and update SGD
                 self.optimizer.zero_grad()
+                loss = loss
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5.0)
+
                 self.optimizer.step()
 
                 # measure elapsed time
@@ -401,34 +244,93 @@ class Trainer(object):
                         )
                     )
                 )
-                pbar.update(self.batch_size)
+                batch_size = x.shape[0]
+                pbar.update(batch_size)
 
-                # dump the glimpses and locs
-                if plot:
-                    if self.use_gpu:
-                        imgs = [g.cpu().data.numpy().squeeze() for g in imgs]
-                        locs = [l.cpu().data.numpy() for l in locs]
-                    else:
-                        imgs = [g.data.numpy().squeeze() for g in imgs]
-                        locs = [l.data.numpy() for l in locs]
-                    pickle.dump(
-                        imgs, open(
-                            self.plot_dir + "g_{}.p".format(epoch + 1),
-                            "wb"
-                        )
-                    )
-                    pickle.dump(
-                        locs, open(
-                            self.plot_dir + "l_{}.p".format(epoch + 1),
-                            "wb"
-                        )
-                    )
+            return losses.avg, accs.avg, glimpses.avg
 
-                # log to tensorboard
-                if self.use_tensorboard:
-                    iteration = epoch * len(self.train_loader) + i
+    def rollout(self, x, y):
+        batch_size = x.shape[0]
+        l_t = None
+        h_t = None
 
-            return losses.avg, accs.avg
+        # extract the glimpses
+        total_glimpses = 0
+        # we want to run this loop UNTIL they are all done,
+        # that will involve some "dummy" forward passes
+        # need to track when each element of the batch is actually
+        # done to do proper masking
+
+        # use None so everything errors out if I don't explicitly set it
+        prob_as = [None for _ in range(batch_size)]
+        log_ds = [None for _ in range(batch_size)]
+        done_indices = [-1 for _ in range(batch_size)]
+        timeouts = [False for _ in range(batch_size)]
+        glimpse_totals = [None for _ in range(batch_size)]
+        for t in range(self.num_glimpses):
+            total_glimpses += 1
+            # forward pass through model
+            h_t, l_t, prob_a, d_t, log_probds = self.model(x, l_t, h_t)
+            for batch_ind in range(batch_size):
+                if done_indices[batch_ind] > -1:
+                    # already done
+                    continue
+                elif d_t[batch_ind] == 1:
+                    glimpse_totals[batch_ind] = t + 1
+                    # mark as done
+                    done_indices[batch_ind] = t
+                    # save the log_d
+                    log_ds[batch_ind] = log_probds[batch_ind]
+                    # save the prob_a
+                    prob_as[batch_ind] = prob_a[batch_ind]
+                elif t == self.num_glimpses - 1:
+                    # glimpses are timing out
+                    timeouts[batch_ind] = True
+                    glimpse_totals[batch_ind] = t + 1
+                    # mark as done
+                    done_indices[batch_ind] = t
+                    # save the log_d
+                    log_ds[batch_ind] = log_probds[batch_ind]
+                    # save the prob_a
+                    prob_as[batch_ind] = prob_a[batch_ind]
+            if all([done_index > -1 for done_index in done_indices]):
+                break
+        prob_as = torch.stack(prob_as)
+        log_ds = torch.stack(log_ds)
+        # calculate reward
+        predicted = torch.max(prob_as, 1)[1]
+        R = (predicted.detach() == y.long()).float()
+        R = R.unsqueeze(1).repeat(1, self.num_glimpses)
+
+        # compute losses for differentiable modules
+        loss_action = F.nll_loss(prob_as, y)
+        decision_target = []
+        decision_scaling = []
+        for batch_ind in range(batch_size):
+            if timeouts[batch_ind]:
+                decision_target.append(1)
+                decision_scaling.append(1.0)
+            elif R[batch_ind][0] == 1:
+                decision_target.append(1)
+                decision_scaling.append(self.config.loss_balance)
+            elif R[batch_ind][0] == 0:
+                decision_target.append(0)
+                decision_scaling.append(1.0)
+            else:
+                raise RuntimeError("how did we get here?")
+        decision_target = torch.tensor(decision_target, device=log_ds.device)
+        decision_scaling = torch.tensor(decision_scaling, device=log_ds.device)
+        # now take the error between our decision target and log_ds
+        loss_decision = (F.nll_loss(log_ds, decision_target,
+                                    reduction='none') * decision_scaling).mean()
+        # sum up into a hybrid loss
+        loss = loss_action + loss_decision
+        # compute accuracy
+        correct = (predicted == y).float()
+        acc = 100 * (correct.sum() / len(y))
+
+        return loss, sum(glimpse_totals) / batch_size, acc
+
 
     def validate(self, epoch):
         """
@@ -436,6 +338,7 @@ class Trainer(object):
         """
         losses = AverageMeter()
         accs = AverageMeter()
+
         batch_time = AverageMeter()
         glimpses = AverageMeter()
 
@@ -443,69 +346,8 @@ class Trainer(object):
             if self.use_gpu:
                 x, y = x.cuda(), y.cuda()
             x, y = Variable(x), Variable(y)
-
-            # duplicate 10 times
-            # x = x.repeat(self.M, 1, 1, 1)
-
-            # initialize location vector and hidden state
-            self.batch_size = x.shape[0]
-            h_t, l_t = self.reset()
-
-            # extract the glimpses
-            log_pi = []
-            baselines = []
-
-            prob_as = [None for _ in range(self.batch_size)]
-            log_ds = [None for _ in range(self.batch_size)]
-            done_indices = [-1 for _ in range(self.batch_size)]
-            timeouts = [False for _ in range(self.batch_size)]
-            glimpse_totals = [None for _ in range(self.batch_size)]
-            total_glimpses = 0
-            for t in range(self.num_glimpses):
-                total_glimpses += 1
-                # forward pass through model
-                h_t, l_t, b_t, p, prob_a, log_d, d_t = self.model(x, l_t,
-                                                                  h_t)
-
-                for batch_ind in range(self.batch_size):
-                    if done_indices[batch_ind] > -1:
-                        # already done
-                        continue
-                    elif d_t[batch_ind] == 1:
-                        glimpse_totals[batch_ind] = t + 1
-                        # mark as done
-                        done_indices[batch_ind] = t
-                        # save the log_d
-                        log_ds[batch_ind] = log_d[batch_ind]
-                        # save the prob_a
-                        prob_as[batch_ind] = prob_a[batch_ind]
-                    elif t == self.num_glimpses - 1:
-                        # glimpses are timing out
-                        timeouts[batch_ind] = True
-                        glimpse_totals[batch_ind] = t + 1
-                        # mark as done
-                        done_indices[batch_ind] = t
-                        # save the log_d
-                        log_ds[batch_ind] = log_d[batch_ind]
-                        # save the prob_a
-                        prob_as[batch_ind] = prob_a[batch_ind]
-
-                baselines.append(b_t)
-                log_pi.append(p)
-                if all([done_index > -1 for done_index in done_indices]):
-                    break
-
-            glimpses.update(sum(glimpse_totals) / self.batch_size)
-
-            # now get the correct prob_as, we only saved the good ones :)
-            prob_as = torch.stack(prob_as)
-
-            # calculate reward
-            predicted = torch.max(prob_as, 1)[1]
-
-            # compute accuracy
-            correct = (predicted == y).float()
-            acc = 100 * (correct.sum() / len(y))
+            loss, glm, acc = self.rollout(x,y)
+            glimpses.update(glm)
 
             # store
             try:
@@ -532,24 +374,25 @@ class Trainer(object):
             x, y = Variable(x, volatile=True), Variable(y)
 
             # duplicate 10 times
-            x = x.repeat(self.M, 1, 1, 1)
+            # x = x.repeat(self.M, 1, 1, 1)
 
             # initialize location vector and hidden state
             self.batch_size = x.shape[0]
             h_t, l_t = self.reset()
+            h_t = None
 
             # extract the glimpses
             for t in range(self.num_glimpses - 1):
                 # forward pass through model
-                h_t, l_t, b_t, p = self.model(x, l_t, h_t)
+                h_t, l_t, b_t, p = self.model(x, l_t, h_t, valid=True)
 
             # last iteration
             h_t, l_t, b_t, log_probas, p = self.model(
-                x, l_t, h_t, last=True
+                x, l_t, h_t, last=True, valid=True
             )
 
             log_probas = log_probas.view(
-                self.M, -1, log_probas.shape[-1]
+                -1, log_probas.shape[-1]
             )
             log_probas = torch.mean(log_probas, dim=0)
 
