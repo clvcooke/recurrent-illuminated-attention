@@ -54,16 +54,15 @@ def get_train_valid_loader(data_dir,
     """
     error_msg = "[!] valid_size should be in the range [0, 1]."
     assert ((valid_size >= 0) and (valid_size <= 1)), error_msg
-    task = 'MNIST'
+    task = 'malaria'
     if task == 'malaria':
-        datapath_train_images = r"C:\Users\clvco\Documents\Code\K-space_rl-data\malaria_norm.npy"
-        datapath_train_labels = r"C:\Users\clvco\Documents\Code\K-space_rl-data\malaria_labels.npy"
-
+        datapath_train_images = r"/home/colin/k-space/malaria_norm.npy"
+        datapath_train_labels = r"/home/colin/k-space/malaria_labels.npy" 
         datapath_test_images = None
         datapath_test_labels = None
         train_fact = 255
         shuffle_seed = 3
-        channels = 96
+        channels = 29
         classes = 2
     elif task == 'fashion':
         datapath_test_images = r"C:\Users\clvco\Documents\Code\K-space_rl-data\Fashion\fashion_test_norm.npy"
@@ -100,7 +99,9 @@ def get_train_valid_loader(data_dir,
     if task == 'MNIST':
         data_x = torch.from_numpy(np.load(datapath_train_images).swapaxes(0,1)).reshape((-1, 28, 28, channels)).float() / train_fact
     else:
-        data_x = torch.from_numpy(np.load(datapath_train_images)).reshape((-1, 28, 28, channels)).float() / train_fact
+        data_x = torch.from_numpy(np.load(datapath_train_images)).reshape((-1, 28, 28, 96)).float() / train_fact
+        data_x = torch.cat([data_x[:,:,:,1:10], data_x[:,:,:,11:19],data_x[:,:,:,20:32], data_x[:,:,:,33:42], data_x[:,:,:,43:51], data_x[:,:,:,52:64], data_x[:,:,:,65:74], data_x[:,:,:,75:83], data_x[:,:,:,84:]], axis=-1)
+        data_x = data_x[:,:,:,29:29*2]
     data_y = torch.from_numpy(np.load(datapath_train_labels)).long()
     if len(data_y.shape) > 1:
         data_y = torch.argmax(data_y, axis=-1)

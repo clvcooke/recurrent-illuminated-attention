@@ -14,7 +14,6 @@ from utils import AverageMeter
 from model import RecurrentAttention
 
 import wandb
-wandb.init("RVA")
 
 
 class Trainer(object):
@@ -109,7 +108,6 @@ class Trainer(object):
             self.model.parameters(), lr=self.lr
         )
 
-        wandb.watch(self.model, log="all")
 
     def train(self):
         """
@@ -133,7 +131,6 @@ class Trainer(object):
                 '\nEpoch: {}/{} - LR: {:.6f}'.format(
                     epoch + 1, self.epochs, self.lr)
             )
-            print('loss_params', LOSS_BALANCE)
 
             # train for 1 epoch
             train_loss, train_acc, glimpses = self.train_one_epoch(epoch)
